@@ -10,4 +10,13 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-module.exports = pool.promise(); // Use promise-based queries
+pool.getConnection()
+  .then(connection => {
+    console.log('Database connection successful');
+    connection.release();
+  })
+  .catch(err => {
+    console.error('Database connection failed:', err);
+  });
+
+module.exports = pool; // Use promise-based queries
