@@ -43,6 +43,7 @@ router.post('/login', [
 
     const token = generateToken({ username });
     res.json({ message: 'Login successful!', token });
+    console.log(username + " logged in");
   } catch (error) {
     console.error('Error during login:', error);
     res.status(500).json({ message: 'Internal server error' });
