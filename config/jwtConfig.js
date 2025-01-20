@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
 
-// Use environment variable for JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'NE'; // Default to 'NE' if no env var
 
 // Function to generate a JWT
@@ -20,7 +19,7 @@ function verifyToken(token) {
   });
 }
 
-// Function to blacklist a token (example implementation)
+// Function to blacklist a token
 const blacklistedTokens = new Set();
 
 function blacklistToken(token) {

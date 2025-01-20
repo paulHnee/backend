@@ -19,4 +19,4 @@ pool.getConnection()
     console.error('Database connection failed:', err);
   });
 
-module.exports = pool; // Use promise-based queries
+module.exports = pool;
