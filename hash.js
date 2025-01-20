@@ -6,6 +6,6 @@ const hashPassword = async (plainPassword) => {
   return hashedPassword;
 };
 
-// Example usage:
-const password = 'password123';
+// TEst the function
+const password = 'admin';
 hashPassword(password).then((hashed) => console.log(hashed));
