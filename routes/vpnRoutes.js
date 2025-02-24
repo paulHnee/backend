@@ -58,7 +58,7 @@ router.post('/public_key', [
 
   try {
     const result = await db.query(
-      'INSERT INTO public_keys (name, public_key, ip_address) VALUES (?, ?, ?)',
+      'INSERT INTO vpn (name, public_key, ip_address) VALUES (?, ?, ?)',
       [username +"-"+ Device, publickey, ipAddress]
     );
 
@@ -77,8 +77,8 @@ router.get('/list', authenticateToken, async (req, res) => {
   try {
     // Example: Fetch devices from database (adjust query as needed)
     const devices = await db.query(
-      'SELECT device FROM public_keys WHERE username = ?',
-      [username]
+      'SELECT device FROM vpn WHERE name LIKE ?',
+      [{username} + '-%']
     );
 
     res.json({ devices: devices.rows.map(row => row.device) }); // Send list of device names
