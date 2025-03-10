@@ -63,7 +63,7 @@ router.post('/public_key', [
     );
 
     console.log(`Public key added for user ${username}, device ${Device}`);
-    res.status(201).json({ message: 'Public key added successfully' }); // 201 Created
+    res.status(201).json({ message: 'Public key added successfully' }); // 201 Success
   } catch (error) {
     console.error('Error adding public key:', error);
     res.status(500).json({ error: 'Failed to add public key' }); // 500 Internal Server Error
