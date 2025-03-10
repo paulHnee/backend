@@ -12,7 +12,7 @@ const vpnRoutes = require('./routes/vpnRoutes');
 const errorHandler = require('./middlewares/errorHandler');
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT  || 4000;
 
 // Security middleware
 app.use(helmet());
@@ -39,12 +39,12 @@ app.use(expressWinston.logger({
     winston.format.json()
   )
 }));
-
+// Parse incoming requests with JSON payloads
 app.use(express.json());
 app.use('/api', loginRoutes);
 app.use('/vpn', vpnRoutes);
 
-// Zentrales error handling
+// Error handling
 app.use(errorHandler);
 
 app.listen(port, () => {

@@ -29,12 +29,14 @@ router.post('/login', [
   const { username, password } = req.body;
 
   try {
+
+    // Check if the user exists
     const [rows] = await db.query('SELECT id, username, password FROM users WHERE username = ?', [username]);
 
     if (rows.length === 0) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
-
+    // Check if the password is correct
     const user = rows[0];
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
