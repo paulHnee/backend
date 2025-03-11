@@ -6,8 +6,9 @@
     "start": "node server.js"
   },
   "keywords": [],
-  "author": "",
+  "author": "paul Buchwald",
   "license": "ISC",
+  "proxy": "http://localhost:5000",
   "description": "",
   "dependencies": {
     "bcrypt": "^5.1.1",

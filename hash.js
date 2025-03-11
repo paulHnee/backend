@@ -7,5 +7,5 @@ const hashPassword = async (plainPassword) => {
 };
 
 // Example usage:
-const password = 'admin';
+const password = 'admin123';
 hashPassword(password).then((hashed) => console.log(hashed));
