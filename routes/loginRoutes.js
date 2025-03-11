@@ -29,13 +29,13 @@ router.post('/login', [
   const { username, password } = req.body;
 
   try {
-
     // Check if the user exists
     const [rows] = await db.query('SELECT id, username, password FROM users WHERE username = ?', [username]);
 
     if (rows.length === 0) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
+
     // Check if the password is correct
     const user = rows[0];
     const isPasswordValid = await bcrypt.compare(password, user.password);
@@ -51,7 +51,7 @@ router.post('/login', [
       // Add other relevant user data (roles, permissions, etc.)
     };
 
-    const token = generateToken(payload); //GEN TOKEN
+    const token = generateToken(payload); // Generate token
     res.json({ message: 'Login successful!', token });
 
   } catch (error) {
@@ -62,33 +62,33 @@ router.post('/login', [
 
 // Protected route
 router.get('/protected', async (req, res) => {
-    const authHeader = req.headers.authorization;
+  const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ message: 'No token provided' });
-    }
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'No token provided' });
+  }
 
-    const token = authHeader.split(' ')[1]; // Extract the token
+  const token = authHeader.split(' ')[1]; // Extract the token
 
-    try {
-      // Verify the token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  try {
+    // Verify the token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // Access the username from the decoded token
-      const username = decoded.username;
-      const userId = decoded.userId;
+    // Access the username from the decoded token
+    const username = decoded.username;
+    const userId = decoded.userId;
 
-      res.json({
-        message: 'Protected route accessed',
-        user: {
-          userId: userId,
-          username: username,
-        },
-      });
-    } catch (error) {
-        console.error('Error during protected route access:', error);
-        return res.status(401).json({ message: 'Invalid or expired token' });
-    }
+    res.json({
+      message: 'Protected route accessed',
+      user: {
+        userId: userId,
+        username: username,
+      },
+    });
+  } catch (error) {
+    console.error('Error during protected route access:', error);
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
 });
 
 module.exports = router;
