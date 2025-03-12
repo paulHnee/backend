@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 
-// JWT SECRET MUST BE GIVIN
+// JWT SECRET MUST BE PROVIDED
 if (!process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET environment variable is required');
 }

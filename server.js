@@ -10,6 +10,7 @@ const corsConfig = require('./config/corsConfig');
 const loginRoutes = require('./routes/loginRoutes');
 const vpnRoutes = require('./routes/vpnRoutes');
 const errorHandler = require('./middlewares/errorHandler');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 const port = process.env.PORT || 5000;
