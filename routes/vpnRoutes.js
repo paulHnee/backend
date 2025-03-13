@@ -7,18 +7,11 @@ const { verifyToken } = require('../config/jwtConfig');
 
 // Authenticate token
 const authenticateToken = async (req, res, next) => {
-  // Try to get token from cookies first
-  let token = req.cookies.token;
-  
-  // If not in cookies, try Authorization header
-  if (!token) {
-    const authHeader = req.headers['authorization'];
-    token = authHeader && authHeader.split(' ')[1];
-  }
+  const token = req.cookies.token; // Read token from cookie
 
   if (!token) {
     console.error('No token provided');
-    return res.status(401).json({ error: 'No token provided' });
+    return res.status(401).json({ error: 'No token provided' }); // Unauthorized
   }
 
   try {
@@ -27,7 +20,7 @@ const authenticateToken = async (req, res, next) => {
     next();
   } catch (err) {
     console.error("JWT verification error:", err);
-    return res.status(403).json({ error: 'Invalid token' });
+    return res.status(403).json({ error: 'Invalid token' }); // Forbidden
   }
 };
 
@@ -61,17 +54,8 @@ router.post('/public_key', [
   const { publickey, device } = req.body;
   const username = req.user.username;
 
+  const ipAddress = Math.random().toString(36).substring(7); // Random IP address
 
-// FOR TESTING PURPOSES ONLY
-// Random IP address
-//! comment out for production
-/*  ########################################  */
-  const ipAddress = Math.random().toString(36).substring(7); 
-/*  ########################################  */
-
-
-// CHECK INPUT VALIDITY //
-/*  ########################################  */
   let allowed = true;
   if (publickey.length < 32 || !publickey) {
     allowed = false;
