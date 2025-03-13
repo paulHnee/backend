@@ -6,11 +6,11 @@ const morgan = require('morgan');
 const winston = require('winston');
 const expressWinston = require('express-winston');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser'); // Add this line
 const corsConfig = require('./config/corsConfig');
 const loginRoutes = require('./routes/loginRoutes');
 const vpnRoutes = require('./routes/vpnRoutes');
 const errorHandler = require('./middlewares/errorHandler');
-const cookieParser = require('cookie-parser');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -50,6 +50,9 @@ app.use(expressWinston.logger({
     winston.format.json()
   )
 }));
+
+// Parse cookies
+app.use(cookieParser()); // Add this line
 
 // Parse incoming requests with JSON payloads
 app.use(express.json());

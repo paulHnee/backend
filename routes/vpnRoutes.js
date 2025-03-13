@@ -7,11 +7,18 @@ const { verifyToken } = require('../config/jwtConfig');
 
 // Authenticate token
 const authenticateToken = async (req, res, next) => {
-  const token = req.cookies.token; // Read token from cookie
+  // Try to get token from cookies first
+  let token = req.cookies.token;
+  
+  // If not in cookies, try Authorization header
+  if (!token) {
+    const authHeader = req.headers['authorization'];
+    token = authHeader && authHeader.split(' ')[1];
+  }
 
   if (!token) {
     console.error('No token provided');
-    return res.status(401).json({ error: 'No token provided' }); // Unauthorized
+    return res.status(401).json({ error: 'No token provided' });
   }
 
   try {
@@ -20,7 +27,7 @@ const authenticateToken = async (req, res, next) => {
     next();
   } catch (err) {
     console.error("JWT verification error:", err);
-    return res.status(403).json({ error: 'Invalid token' }); // Forbidden
+    return res.status(403).json({ error: 'Invalid token' });
   }
 };
 

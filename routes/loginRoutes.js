@@ -53,7 +53,7 @@ router.post('/login', [
     const token = generateToken(payload); // Generate token
 
     // Set token in HttpOnly cookie
-    res.cookie('token', token, { httpOnly: true, secure: true });
+    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 3600000 });
 
     res.json({ message: 'Login successful!' });
 
