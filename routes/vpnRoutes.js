@@ -3,26 +3,7 @@ const router = express.Router();
 const db = require('../config/database'); 
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { verifyToken } = require('../config/jwtConfig'); 
-
-// Authenticate token
-const authenticateToken = async (req, res, next) => {
-  const token = req.cookies.token; // Read token from cookie
-
-  if (!token) {
-    console.error('No token provided');
-    return res.status(401).json({ error: 'No token provided' }); // Unauthorized
-  }
-
-  try {
-    const user = await verifyToken(token);
-    req.user = user;
-    next();
-  } catch (err) {
-    console.error("JWT verification error:", err);
-    return res.status(403).json({ error: 'Invalid token' }); // Forbidden
-  }
-};
+const validateToken = require('../middleware/validateToken');
 
 // Rate limiting
 const limiter = rateLimit({
@@ -33,7 +14,7 @@ const limiter = rateLimit({
 
 router.use(limiter); // Apply rate limiting to all routes in this router
 
-router.get('/vpn', authenticateToken, (req, res) => {
+router.get('/vpn', validateToken, (req, res) => {
   console.log(`VPN accessed by user: ${req.user.username}`); 
   res.send(`Hello VPN!  Welcome, ${req.user.username}`);
 });
@@ -42,7 +23,7 @@ router.get('/vpn', authenticateToken, (req, res) => {
 // including the IP address.
 // into the database
 router.post('/public_key', [ 
-  authenticateToken, 
+  validateToken, 
   body('publickey').isString().notEmpty().trim().escape(), 
   body('device').isString().notEmpty().trim().escape()      
 ], async (req, res) => {
@@ -85,7 +66,7 @@ router.post('/public_key', [
 });
 
 // Delete a VPN entry
-router.delete('/vpn/:id', authenticateToken, async (req, res) => {
+router.delete('/vpn/:id', validateToken, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -103,7 +84,7 @@ router.delete('/vpn/:id', authenticateToken, async (req, res) => {
 });
 
 // Fetch VPN list
-router.get('/vpn/list', authenticateToken, async (req, res) => {
+router.get('/list', validateToken, async (req, res) => {
   const username = req.user.username;
 
   try {
@@ -121,7 +102,7 @@ router.get('/vpn/list', authenticateToken, async (req, res) => {
 });
 
 // Get VPN configuration
-router.get('/vpn-configuration', authenticateToken, async (req, res) => {
+router.get('/vpn-configuration', validateToken, async (req, res) => {
   try {
     // Fetch VPN configuration from database or configuration file
     const dbIpAddress = await db.query('SELECT ip_address FROM vpn WHERE user_id = ?', [req.user.userId]);
@@ -140,7 +121,7 @@ router.get('/vpn-configuration', authenticateToken, async (req, res) => {
 });
 
 // Refresh VPN list
-router.get('/refresh', authenticateToken, async (req, res) => {
+router.get('/refresh', validateToken, async (req, res) => {
   try {
     // Logic to refresh VPN list
     const refreshedList = await db.query('SELECT * FROM vpn WHERE user_id = ?', [req.user.userId]);
