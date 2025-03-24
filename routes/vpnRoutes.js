@@ -103,7 +103,7 @@ router.delete('/vpn/:id', authenticateToken, async (req, res) => {
 });
 
 // Fetch VPN list
-router.get('/list', authenticateToken, async (req, res) => {
+router.get('/vpn/list', authenticateToken, async (req, res) => {
   const username = req.user.username;
 
   try {
