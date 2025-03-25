@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/database'); 
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const validateToken = require('../middleware/validateToken');
+const validateToken = require('../middlewares/validateToken');
 
 // Rate limiting
 const limiter = rateLimit({
