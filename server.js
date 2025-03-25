@@ -8,14 +8,22 @@ const expressWinston = require('express-winston');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const corsConfig = require('./config/corsConfig');
-const loginRoutes = require('./routes/loginRoutes');
+const authRoutes = require('./routes/authRoutes'); // Replace loginRoutes import
 const vpnRoutes = require('./routes/vpnRoutes');
 const errorHandler = require('./middlewares/errorHandler');
+const printRoutes = require('./utils/routeDebugger');
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Security middleware
+// 1. Basic middleware - Must be first
+app.use(express.json());
+app.use(cookieParser());
+
+// 2. CORS configuration - Must be before other middleware
+app.use(cors(corsConfig));
+
+// 3. Security middleware
 app.use(helmet({
   contentSecurityPolicy: false, // Disable CSP for now, configure as needed
   frameguard: { action: 'deny' },
@@ -26,10 +34,6 @@ app.use(helmet({
   xssFilter: true
 }));
 
-// CORS configuration
-app.use(cors(corsConfig));
-app.options('*', cors(corsConfig)); // Handle preflight requests
-
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -38,7 +42,7 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Logging
+// 4. Request logging
 app.use(morgan('combined'));
 app.use(expressWinston.logger({
   transports: [
@@ -51,15 +55,32 @@ app.use(expressWinston.logger({
   )
 }));
 
-// Parse cookies
-app.use(cookieParser()); // Add this line
+// Enable detailed error logging in development
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+  });
+  
+  // Add request debugging in development
+  const requestDebug = require('./middlewares/requestDebug');
+  app.use(requestDebug);
+}
 
-// Parse incoming requests with JSON payloads
-app.use(express.json());
+// 5. Routes
+app.use('/auth', authRoutes); // Use the new auth routes
+app.use('/api/vpn', vpnRoutes); // Updated VPN routes path for clarity
 
-// Routes
-app.use('/api', loginRoutes);
-app.use('/vpn', vpnRoutes);
+// Test route
+app.get('/ping', (req, res) => {
+  res.json({ message: 'pong' });
+});
+
+// 404 handler - add before error handler
+app.use((req, res, next) => {
+  console.log(`404 - Route not found: ${req.method} ${req.url}`);
+  res.status(404).json({ error: 'Route not found' });
+});
 
 // Error handling
 app.use(errorHandler);
@@ -67,12 +88,9 @@ app.use(errorHandler);
 // Graceful shutdown
 const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Server running on port ${port}`);
-  console.log('Registered routes:');
-  app._router.stack.forEach((middleware) => {
-    if (middleware.route) {
-      console.log(`Route: ${middleware.route.path}`);
-    }
-  });
+  
+  // Print all registered routes
+  printRoutes(app);
 });
 
 process.on('SIGTERM', () => {
