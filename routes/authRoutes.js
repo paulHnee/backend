@@ -37,7 +37,7 @@ const validate = (req, res, next) => {
 
 // Debug endpoint
 router.get('/status', (req, res) => {
-  res.json({ status: 'Auth service operational' });
+  res.json({ status: 'Auth router operational' });
 });
 
 // Add this before other routes
@@ -51,10 +51,12 @@ router.post('/test-cookies', (req, res) => {
   res.json({ message: 'Cookie set test' });
 });
 
-// Login route with validation
+// Login route with validation and rate limiting
 router.post('/login', 
+  authLimiter,
+  validateLogin,
   (req, res, next) => {
-    console.log('Login route hit:', {
+    console.log('Login attempt:', {
       body: req.body,
       headers: req.headers,
       cookies: req.cookies
@@ -78,7 +80,7 @@ router.post('/logout',
 // User info route (protected)
 router.get('/me',
   require('../middlewares/validateToken'),
-  authController.getCurrentUser
+  authController.me
 );
 
 // Password reset request

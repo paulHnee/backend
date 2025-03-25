@@ -166,7 +166,7 @@ class TokenManager {
       refresh: {
         ...config.cookies,
         httpOnly: true,
-        path: '/api/auth/refresh',
+        path: '/auth/refresh',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
       }
     };
