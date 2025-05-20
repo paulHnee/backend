@@ -1,46 +1,60 @@
-
 const jwt = require('jsonwebtoken');
 const ldapAuth = require('../config/ldap');
 
+/**
+ * Behandelt Login-Anfragen mit LDAP-Authentifizierung
+ * 
+ * @param {Request} req - Express Request Objekt mit username und password im Body
+ * @param {Response} res - Express Response Objekt
+ */
 exports.login = async (req, res) => {
-  console.log('Login attempt received');
+  console.log('Login-Versuch empfangen');
   const { username, password } = req.body;
-  console.log('Received username:', username);
-  // Be cautious logging passwords in production environments
-  // For debugging, we'll log a masked version or just confirm it's received
-  console.log('Received password (exists):', password ? 'Yes' : 'No');
+  console.log('Empfangener Benutzername:', username);
+  // Vorsicht beim Loggen von Passwörtern in Produktionsumgebungen
+  // Für Debug-Zwecke loggen wir nur ob ein Passwort vorhanden ist
+  console.log('Passwort empfangen (vorhanden):', password ? 'Ja' : 'Nein');
 
   try {
+    // LDAP-Authentifizierung als Promise
     await new Promise((resolve, reject) => {
       ldapAuth.authenticate(username, password, (err, user) => {
         if (err) {
-          console.error('LDAP authentication error for username:', username, 'Error:', err);
+          console.error('LDAP-Authentifizierungsfehler für Benutzer:', username, 'Fehler:', err);
           return reject(err);
         }
         if (!user) {
-          // This case might indicate user not found or password incorrect by some ldapauth libraries
-          console.error('LDAP authentication failed for username:', username, 'User not found or invalid credentials.');
-          return reject(new Error('Authentication failed: User not found or invalid credentials'));
+          // Dieser Fall zeigt an, dass der Benutzer nicht gefunden wurde oder das Passwort falsch ist
+          console.error('LDAP-Authentifizierung fehlgeschlagen für Benutzer:', username, 'Benutzer nicht gefunden oder ungültige Anmeldedaten.');
+          return reject(new Error('Authentifizierung fehlgeschlagen: Benutzer nicht gefunden oder ungültige Anmeldedaten'));
         }
-        console.log('LDAP authentication successful for username:', username, 'User details:', user);
-        resolve(user); // Resolve with the user object
+        console.log('LDAP-Authentifizierung erfolgreich für Benutzer:', username, 'Benutzerdetails:', user);
+        resolve(user); // Erfolgreich mit Benutzerobjekt auflösen
       });
     });
     
+    // JWT Token generieren mit 1 Stunde Gültigkeit
     const token = jwt.sign({ username }, process.env.JWT_SECRET, {
       expiresIn: '1h'
     });
 
+    // Token an Client senden
     res.json({ token });
   } catch (error) {
-    console.error('LDAP authentication processing failed for username:', username, 'Error:', error);
-    res.status(401).json({ error: 'Authentication failed', details: error.message });
+    console.error('LDAP-Authentifizierungsverarbeitung fehlgeschlagen für Benutzer:', username, 'Fehler:', error);
+    res.status(401).json({ error: 'Authentifizierung fehlgeschlagen', details: error.message });
   }
 };
 
+/**
+ * Stellt Dashboard-Daten für authentifizierte Benutzer bereit
+ * 
+ * @param {Request} req - Express Request Objekt mit Benutzerinformationen
+ * @param {Response} res - Express Response Objekt
+ */
 exports.getDashboardData = (req, res) => {
   res.json({
-    message: `Welcome, ${req.user.username}!`,
-    status: 'success'
+    message: `Willkommen, ${req.user.username}!`,
+    status: 'erfolgreich'
   });
 };
