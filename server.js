@@ -38,13 +38,13 @@ if (process.env.NODE_ENV === 'production') {
   try {
     const certPath = process.env.SSL_CERT_PATH || path.join(__dirname, 'certs');
     const options = {
-      key: fs.readFileSync(path.join(certPath, 'server.key')),
-      cert: fs.readFileSync(path.join(certPath, 'server.crt')),
+      key: fs.readFileSync(path.join(certPath, 'itsz.hnee.de.key')),
+      cert: fs.readFileSync(path.join(certPath, 'itsz.hnee.de.crt')),
       ...productionConfig.ssl
     };
 
     https.createServer(options, app).listen(PORT, () => {
-      console.log(`HTTPS Server running on port ${PORT} (Production with self-signed cert)`);
+      console.log(`HTTPS Server running on port ${PORT} (Production)`);
     });
   } catch (error) {
     console.error('Failed to start HTTPS server:', error);
