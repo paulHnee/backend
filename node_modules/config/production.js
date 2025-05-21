@@ -1,6 +1,6 @@
 export const productionConfig = {
   cors: {
-    origin: ['https://itsz.hnee.de', 'https://10.1.1.45'],
+    origin: ['https://10.1.1.45'],
     credentials: true
   },
   ssl: {
