@@ -64,5 +64,4 @@ const ldapAuth = {
     auth.authenticate(username, password, callback);
   }
 };
-
 export default ldapAuth;
