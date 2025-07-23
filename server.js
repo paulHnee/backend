@@ -9,6 +9,7 @@ import helmet from 'helmet';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { productionConfig } from './config/production.js';
+import cookieParser from 'cookie-parser';
 
 import { router as authRoutes } from './routes/authRoutes.js';
 import { corsOptions } from './config/cors.js';
@@ -22,6 +23,7 @@ const app = express();
 // Middleware Konfiguration
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use(cookieParser());
 app.use('/api', authRoutes);
 
 // Produktions-Middleware
