@@ -31,8 +31,9 @@ export const login = async (req, res) => {
     // ANSTATT den Token im Body zu senden, setzen wir ein sicheres HttpOnly-Cookie.
     res.cookie('session_token', token, {
       httpOnly: true, // Verhindert den Zugriff über JavaScript im Browser
-      secure: process.env.NODE_ENV === 'production', // Cookie nur über HTTPS senden
-      sameSite: 'strict', // Schutz gegen CSRF-Angriffe
+      secure: false, // Set to false for HTTP connections (change to true for HTTPS in production)
+      sameSite: 'lax', // Changed from 'strict' to 'lax' for cross-origin requests
+      path: '/', // Ensure cookie is available for all paths
       maxAge: 24 * 60 * 60 * 1000 // 1 Tag in Millisekunden
     });
 
@@ -57,6 +58,9 @@ export const logout = (req, res) => {
   // Lösche das Cookie, indem wir es mit einem abgelaufenen Datum überschreiben.
   res.cookie('session_token', '', {
     httpOnly: true,
+    secure: false, // Match the login cookie settings
+    sameSite: 'lax', // Match the login cookie settings
+    path: '/', // Ensure cookie is cleared from all paths
     expires: new Date(0)
   });
   res.status(200).json({ message: 'Erfolgreich abgemeldet' });

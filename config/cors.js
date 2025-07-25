@@ -8,7 +8,7 @@ const corsOptions = {
     // Erlaubt mehrere Origins
     origin: function(origin, callback) {
         const allowedOrigins = [
-            process.env.FRONTEND_URL || 'http://localhost:3000',
+            process.env.FRONTEND_URL || 'http://10.1.1.45',
             process.env.ADDITIONAL_ORIGINS ? process.env.ADDITIONAL_ORIGINS.split(',') : [],
         ].flat();
         
