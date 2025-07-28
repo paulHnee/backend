@@ -23,8 +23,8 @@ const app = express();
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
-app.use('/api/auth', authRoutes);
-app.use('/api/vpn', vpnRoutes);
+app.use('/api', authRoutes);  // Auth-Routen unter /api mounten (wie erwartet)
+app.use('/api/vpn', vpnRoutes); // VPN-Routen unter /api/vpn mounten
 
 // Produktions-Middleware
 if (process.env.NODE_ENV === 'production') {
