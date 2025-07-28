@@ -155,6 +155,8 @@ export const mapUserRoles = (userGroups) => {
     if (groupLower === 'itszadmins') {
       roles.isAdmin = true;
       roles.isITSZ = true;
+      roles.isLecturer = true;
+      roles.isEmployee = true;
       roles.canManageUsers = true;
       roles.canViewReports = true;
     }
