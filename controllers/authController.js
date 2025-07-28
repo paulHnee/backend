@@ -1,18 +1,48 @@
+/**
+ * AuthController - Zentrale Authentifizierungs- und Autorisierungslogik
+ * 
+ * Diese Datei behandelt alle authentifizierungsbezogenen Anfragen für das HNEE LDAP System.
+ * Hauptfunktionen:
+ * - LDAP-basierte Benutzerauthentifizierung
+ * - JWT-Token-Generierung und -Validierung
+ * - HNEE-Gruppen-Extraktion und -Mapping
+ * - Session-Management mit HttpOnly Cookies
+ * - Sichere Logout-Funktionalität
+ * 
+ * Sicherheitsfeatures:
+ * - HttpOnly Cookies für Token-Speicherung
+ * - Sichere Cookie-Einstellungen (sameSite, secure)
+ * - Automatische Token-Erneuerung
+ * - LDAP-Gruppenvalidierung
+ * 
+ * @author ITSZ Team
+ * @version 1.0.0
+ */
+
 import jwt from 'jsonwebtoken';
 import ldapAuth from '../config/ldap.js';
 import { isUserInGroup, getGroupMembers, searchGroups, mapUserRoles } from '../utils/ldapUtils.js';
 
 /**
  * Behandelt Login-Anfragen mit LDAP-Authentifizierung und setzt ein HttpOnly-Cookie.
- * @param {Request} req - Express Request Objekt
+ * 
+ * Ablauf:
+ * 1. LDAP-Authentifizierung mit Username/Password
+ * 2. Benutzerinformationen aus LDAP abrufen
+ * 3. HNEE-Gruppen extrahieren und mappen
+ * 4. JWT-Token generieren mit Benutzerinformationen
+ * 5. Secure HttpOnly Cookie setzen
+ * 
+ * @param {Request} req - Express Request Objekt mit { username, password }
  * @param {Response} res - Express Response Objekt
+ * @returns {Object} JSON Response mit Benutzerinformationen oder Fehlermeldung
  */
 export const login = async (req, res) => {
   const { username, password } = req.body;
   console.log('Login-Versuch empfangen für:', username);
 
   try {
-    // LDAP-Authentifizierung
+    // LDAP-Authentifizierung: Validiert Username/Password gegen LDAP-Server
     await new Promise((resolve, reject) => {
       ldapAuth.authenticate(username, password, (err, user) => {
         if (err || !user) {
@@ -24,7 +54,7 @@ export const login = async (req, res) => {
       });
     });
 
-    // Benutzerinformationen und Gruppen abrufen
+    // Benutzerinformationen und Gruppenmitgliedschaften aus LDAP abrufen
     let userInfo;
     try {
       userInfo = await new Promise((resolve, reject) => {
@@ -40,6 +70,7 @@ export const login = async (req, res) => {
     } catch (error) {
       console.error('LDAP getUserInfo fehlgeschlagen, verwende Fallback:', error.message);
       // Fallback: Grundlegende Benutzerinformationen ohne Gruppen
+      // Wird verwendet wenn LDAP-Server temporär nicht verfügbar ist
       userInfo = { 
         username, 
         displayName: username, 

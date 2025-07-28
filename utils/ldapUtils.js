@@ -1,14 +1,43 @@
 /**
- * LDAP Utility-Funktionen für Gruppenabfragen und Benutzerinformationen
+ * LDAP Utility-Funktionen für erweiterte Gruppenabfragen und Benutzerinformationen
+ * 
+ * Diese Datei enthält spezialisierte Hilfsfunktionen für die Interaktion mit dem HNEE LDAP-System.
+ * Hauptfunktionen:
+ * - Gruppenmitgliedschaft-Überprüfung
+ * - Gruppensuche und -auflistung
+ * - Benutzerrollen-Mapping für HNEE-spezifische Gruppen
+ * - Erweiterte LDAP-Abfragen mit Fehlerbehandlung
+ * 
+ * Unterstützte HNEE-Gruppen:
+ * - ITSZadmins: ITSZ Administratoren
+ * - IT-Mitarbeiter: IT-Abteilung Mitarbeiter
+ * - Mitarbeiter: Allgemeine HNEE Mitarbeiter
+ * - Dozenten: Lehrpersonal
+ * - GastDozenten: Externe Dozenten
+ * - Studenten: Studierende
+ * 
+ * Sicherheitsfeatures:
+ * - Timeout-Konfiguration für LDAP-Verbindungen
+ * - TLS-Verbindungen mit Zertifikatsvalidierung
+ * - Automatische Verbindungsschließung
+ * - Comprehensive Error Handling
+ * 
+ * @author ITSZ Team
+ * @version 1.0.0
  */
 import ldapAuth from '../config/ldap.js';
 import ldapjs from 'ldapjs';
 
 /**
  * Überprüft, ob ein Benutzer Mitglied einer bestimmten Gruppe ist
- * @param {string} username - Der Benutzername
+ * 
+ * Diese Funktion nutzt die getUserInfo Methode des LDAP-Auth-Moduls
+ * und durchsucht die Gruppenliste des Benutzers nach dem angegebenen Gruppennamen.
+ * 
+ * @param {string} username - Der Benutzername (z.B. "pbuchwald")
  * @param {string} groupName - Der Name der Gruppe (z.B. "hnee-mitarbeiter")
  * @returns {Promise<boolean>} - true wenn Mitglied, false wenn nicht
+ * @throws {Error} Bei LDAP-Verbindungsfehlern oder ungültigen Benutzern
  */
 export const isUserInGroup = async (username, groupName) => {
   return new Promise((resolve, reject) => {
@@ -18,6 +47,7 @@ export const isUserInGroup = async (username, groupName) => {
         return;
       }
       
+      // Case-insensitive Suche in der Gruppenliste des Benutzers
       const isMember = userInfo.groups.some(group => 
         group.toLowerCase().includes(groupName.toLowerCase())
       );
@@ -28,20 +58,27 @@ export const isUserInGroup = async (username, groupName) => {
 
 /**
  * Holt alle Mitglieder einer bestimmten LDAP-Gruppe
+ * 
+ * Diese Funktion führt eine direkte LDAP-Abfrage durch, um alle Mitglieder
+ * einer spezifischen Gruppe zu ermitteln. Verwendet sichere TLS-Verbindungen.
+ * 
  * @param {string} groupName - Der DN oder CN der Gruppe
  * @returns {Promise<Array>} - Array von Benutzernamen
+ * @throws {Error} Bei LDAP-Verbindungsfehlern oder ungültigen Gruppen
  */
 export const getGroupMembers = async (groupName) => {
   return new Promise((resolve, reject) => {
+    // LDAP-Client mit Sicherheitskonfiguration erstellen
     const client = ldapjs.createClient({
       url: process.env.LDAP_URL,
-      timeout: 30000,
-      connectTimeout: 10000,
+      timeout: 30000,        // 30 Sekunden Timeout
+      connectTimeout: 10000, // 10 Sekunden Verbindungs-Timeout
       tlsOptions: {
-        rejectUnauthorized: true
+        rejectUnauthorized: true // TLS-Zertifikate validieren
       }
     });
 
+    // Authentifizierung mit Service-Account
     client.bind(process.env.LDAP_BIND_DN, process.env.LDAP_BIND_CREDENTIALS, (err) => {
       if (err) {
         client.destroy();
@@ -144,7 +181,6 @@ export const mapUserRoles = (userGroups) => {
     // Dozenten
     if (groupLower === 'dozenten') {
       roles.isLecturer = true;
-      roles.isEmployee = true;
       roles.canViewReports = true;
     }
     
