@@ -10,6 +10,7 @@ import { productionConfig } from './config/production.js';
 import cookieParser from 'cookie-parser';
 
 import { router as authRoutes } from './routes/authRoutes.js';
+import { router as vpnRoutes } from './routes/vpnRoutes.js';
 import { corsOptions } from './config/cors.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,7 +23,8 @@ const app = express();
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
-app.use('/api', authRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/vpn', vpnRoutes);
 
 // Produktions-Middleware
 if (process.env.NODE_ENV === 'production') {
