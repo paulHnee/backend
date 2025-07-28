@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import ldapAuth from '../config/ldap.js';
+import { isUserInGroup, getGroupMembers, searchGroups, mapUserRoles } from '../utils/ldapUtils.js';
 
 /**
  * Behandelt Login-Anfragen mit LDAP-Authentifizierung und setzt ein HttpOnly-Cookie.
@@ -11,7 +12,7 @@ export const login = async (req, res) => {
   console.log('Login-Versuch empfangen für:', username);
 
   try {
-    // LDAP-Authentifizierung (Ihre Logik bleibt hier gleich)
+    // LDAP-Authentifizierung
     await new Promise((resolve, reject) => {
       ldapAuth.authenticate(username, password, (err, user) => {
         if (err || !user) {
@@ -23,8 +24,43 @@ export const login = async (req, res) => {
       });
     });
 
-    // JWT Token generieren
-    const token = jwt.sign({ username }, process.env.JWT_SECRET, {
+    // Benutzerinformationen und Gruppen abrufen
+    let userInfo;
+    try {
+      userInfo = await new Promise((resolve, reject) => {
+        ldapAuth.getUserInfo(username, (err, info) => {
+          if (err) {
+            console.error('Fehler beim Abrufen der Benutzerinformationen:', err);
+            reject(err);
+          } else {
+            resolve(info);
+          }
+        });
+      });
+    } catch (error) {
+      console.error('LDAP getUserInfo fehlgeschlagen, verwende Fallback:', error.message);
+      // Fallback: Grundlegende Benutzerinformationen ohne Gruppen
+      userInfo = { 
+        username, 
+        displayName: username, 
+        email: `${username}@hnee.de`,
+        groups: [],
+        roles: []
+      };
+    }
+
+    // JWT Token mit erweiterten Benutzerinformationen generieren
+    const mappedRoles = mapUserRoles(userInfo.groups);
+    
+    const token = jwt.sign({ 
+      username: userInfo.username,
+      displayName: userInfo.displayName,
+      email: userInfo.email,
+      groups: userInfo.groups,
+      roles: userInfo.roles,
+      // Erweiterte Rolleninformationen
+      ...mappedRoles
+    }, process.env.JWT_SECRET, {
       expiresIn: '1d' // Gültigkeit auf 1 Tag setzen
     });
 
@@ -37,10 +73,18 @@ export const login = async (req, res) => {
       maxAge: 24 * 60 * 60 * 1000 // 1 Tag in Millisekunden
     });
 
-    // Sende eine Erfolgsmeldung und Benutzerdaten zurück (ohne Token)
+    // Sende Erfolgsmeldung und erweiterte Benutzerdaten zurück (ohne Token)
     res.status(200).json({
       success: true,
-      user: { username }
+      user: {
+        username: userInfo.username,
+        displayName: userInfo.displayName,
+        email: userInfo.email,
+        groups: userInfo.groups,
+        roles: userInfo.roles,
+        // Erweiterte Rolleninformationen
+        ...mappedRoles
+      }
     });
 
   } catch (error) {
@@ -90,7 +134,88 @@ export const checkSession = (req, res) => {
  */
 export const getDashboardData = (req, res) => {
   res.json({
-    message: `Willkommen, ${req.user.username}!`,
+    message: `Willkommen, ${req.user.displayName || req.user.username}!`,
+    user: req.user,
     status: 'erfolgreich'
   });
+};
+
+/**
+ * API-Endpoint um Benutzergruppen abzufragen
+ * @param {Request} req - Express Request Objekt 
+ * @param {Response} res - Express Response Objekt
+ */
+export const getUserGroups = async (req, res) => {
+  try {
+    const username = req.user.username;
+    
+    // Hole aktuelle Benutzerinformationen
+    const userInfo = await new Promise((resolve, reject) => {
+      ldapAuth.getUserInfo(username, (err, info) => {
+        if (err) reject(err);
+        else resolve(info);
+      });
+    });
+
+    // Mappe Rollen
+    const roles = mapUserRoles(userInfo.groups);
+
+    res.json({
+      username: userInfo.username,
+      displayName: userInfo.displayName,
+      groups: userInfo.groups,
+      roles: roles
+    });
+  } catch (error) {
+    console.error('Fehler beim Abrufen der Benutzergruppen:', error);
+    res.status(500).json({ error: 'Fehler beim Abrufen der Gruppeninformationen' });
+  }
+};
+
+/**
+ * API-Endpoint um zu überprüfen, ob ein Benutzer in einer bestimmten Gruppe ist
+ * @param {Request} req - Express Request Objekt
+ * @param {Response} res - Express Response Objekt
+ */
+export const checkUserGroup = async (req, res) => {
+  try {
+    const { groupName } = req.params;
+    const username = req.user.username;
+
+    const isMember = await isUserInGroup(username, groupName);
+    
+    res.json({
+      username,
+      groupName,
+      isMember
+    });
+  } catch (error) {
+    console.error('Fehler beim Überprüfen der Gruppenmitgliedschaft:', error);
+    res.status(500).json({ error: 'Fehler beim Überprüfen der Gruppenmitgliedschaft' });
+  }
+};
+
+/**
+ * API-Endpoint um alle verfügbaren Gruppen zu durchsuchen
+ * @param {Request} req - Express Request Objekt
+ * @param {Response} res - Express Response Objekt
+ */
+export const searchAvailableGroups = async (req, res) => {
+  try {
+    // Nur Admins und ITSZ-Mitarbeiter dürfen Gruppen durchsuchen
+    if (!req.user.roles?.includes('admin') && !req.user.roles?.includes('itsz')) {
+      return res.status(403).json({ error: 'Keine Berechtigung für diese Aktion' });
+    }
+
+    const { pattern = '*hnee*' } = req.query;
+    const groups = await searchGroups(pattern);
+    
+    res.json({
+      pattern,
+      groups
+    });
+  } catch (error) {
+    console.error('Fehler beim Durchsuchen der Gruppen:', error);
+    res.status(500).json({ error: 'Fehler beim Durchsuchen der Gruppen' });
+  }
 };

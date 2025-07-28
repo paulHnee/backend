@@ -1,0 +1,223 @@
+/**
+ * LDAP Utility-Funktionen für Gruppenabfragen und Benutzerinformationen
+ */
+import ldapAuth from '../config/ldap.js';
+import ldapjs from 'ldapjs';
+
+/**
+ * Überprüft, ob ein Benutzer Mitglied einer bestimmten Gruppe ist
+ * @param {string} username - Der Benutzername
+ * @param {string} groupName - Der Name der Gruppe (z.B. "hnee-mitarbeiter")
+ * @returns {Promise<boolean>} - true wenn Mitglied, false wenn nicht
+ */
+export const isUserInGroup = async (username, groupName) => {
+  return new Promise((resolve, reject) => {
+    ldapAuth.getUserInfo(username, (err, userInfo) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      
+      const isMember = userInfo.groups.some(group => 
+        group.toLowerCase().includes(groupName.toLowerCase())
+      );
+      resolve(isMember);
+    });
+  });
+};
+
+/**
+ * Holt alle Mitglieder einer bestimmten LDAP-Gruppe
+ * @param {string} groupName - Der DN oder CN der Gruppe
+ * @returns {Promise<Array>} - Array von Benutzernamen
+ */
+export const getGroupMembers = async (groupName) => {
+  return new Promise((resolve, reject) => {
+    const client = ldapjs.createClient({
+      url: process.env.LDAP_URL,
+      timeout: 30000,
+      connectTimeout: 10000,
+      tlsOptions: {
+        rejectUnauthorized: true
+      }
+    });
+
+    client.bind(process.env.LDAP_BIND_DN, process.env.LDAP_BIND_CREDENTIALS, (err) => {
+      if (err) {
+        client.destroy();
+        return reject(err);
+      }
+
+      // Suche nach der Gruppe
+      const searchFilter = `(cn=${groupName})`;
+      const searchOptions = {
+        scope: 'sub',
+        filter: searchFilter,
+        attributes: ['member', 'cn']
+      };
+
+      client.search(process.env.LDAP_SEARCH_BASE, searchOptions, (err, searchRes) => {
+        if (err) {
+          client.destroy();
+          return reject(err);
+        }
+
+        let members = [];
+
+        searchRes.on('searchEntry', (entry) => {
+          const attributes = entry.object;
+          if (attributes.member) {
+            const memberArray = Array.isArray(attributes.member) 
+              ? attributes.member 
+              : [attributes.member];
+            
+            // Extrahiere Benutzernamen aus DN
+            members = memberArray.map(memberDN => {
+              const cnMatch = memberDN.match(/^CN=([^,]+)/i);
+              return cnMatch ? cnMatch[1] : memberDN;
+            });
+          }
+        });
+
+        searchRes.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
+
+        searchRes.on('end', () => {
+          client.destroy();
+          resolve(members);
+        });
+      });
+    });
+  });
+};
+
+/**
+ * Überprüft Benutzerrollen basierend auf LDAP-Gruppen
+ * @param {Array} userGroups - Array der Benutzergruppen
+ * @returns {Object} - Objekt mit Rollenberechtigungen
+ */
+export const mapUserRoles = (userGroups) => {
+  const roles = {
+    isAdmin: false,
+    isEmployee: false,
+    isStudent: false,
+    isITSZ: false,
+    isITEmployee: false,
+    isLecturer: false,
+    isGuestLecturer: false,
+    canManageUsers: false,
+    canViewReports: false
+  };
+
+  userGroups.forEach(group => {
+    const groupLower = group.toLowerCase();
+    
+    // ITSZ Admins - höchste Berechtigung
+    if (groupLower === 'itszadmins') {
+      roles.isAdmin = true;
+      roles.isITSZ = true;
+      roles.canManageUsers = true;
+      roles.canViewReports = true;
+    }
+    
+    // IT-Mitarbeiter
+    if (groupLower === 'it-mitarbeiter') {
+      roles.isITEmployee = true;
+      roles.isITSZ = true;
+      roles.canManageUsers = true;
+      roles.canViewReports = true;
+    }
+    
+    // Allgemeine Mitarbeiter
+    if (groupLower === 'mitarbeiter') {
+      roles.isEmployee = true;
+      roles.canViewReports = true;
+    }
+    
+    // Studenten
+    if (groupLower === 'studenten') {
+      roles.isStudent = true;
+    }
+    
+    // Dozenten
+    if (groupLower === 'dozenten') {
+      roles.isLecturer = true;
+      roles.isEmployee = true;
+      roles.canViewReports = true;
+    }
+    
+    // Gastdozenten
+    if (groupLower === 'gastdozenten') {
+      roles.isGuestLecturer = true;
+    }
+  });
+
+  return roles;
+};
+
+/**
+ * Beispiel für eine erweiterte Gruppenabfrage mit Filtern
+ * @param {string} searchPattern - Suchmuster für Gruppennamen
+ * @returns {Promise<Array>} - Array von Gruppeninformationen
+ */
+export const searchGroups = async (searchPattern = '*') => {
+  return new Promise((resolve, reject) => {
+    const client = ldapjs.createClient({
+      url: process.env.LDAP_URL,
+      timeout: 30000,
+      connectTimeout: 10000,
+      tlsOptions: {
+        rejectUnauthorized: true
+      }
+    });
+
+    client.bind(process.env.LDAP_BIND_DN, process.env.LDAP_BIND_CREDENTIALS, (err) => {
+      if (err) {
+        client.destroy();
+        return reject(err);
+      }
+
+      // Suche nach Gruppen mit dem angegebenen Muster
+      const searchFilter = `(&(objectClass=group)(cn=${searchPattern}))`;
+      const searchOptions = {
+        scope: 'sub',
+        filter: searchFilter,
+        attributes: ['cn', 'description', 'member']
+      };
+
+      client.search(process.env.LDAP_SEARCH_BASE, searchOptions, (err, searchRes) => {
+        if (err) {
+          client.destroy();
+          return reject(err);
+        }
+
+        let groups = [];
+
+        searchRes.on('searchEntry', (entry) => {
+          const attributes = entry.object;
+          const memberCount = attributes.member 
+            ? (Array.isArray(attributes.member) ? attributes.member.length : 1)
+            : 0;
+
+          groups.push({
+            name: attributes.cn,
+            description: attributes.description || '',
+            memberCount: memberCount
+          });
+        });
+
+        searchRes.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
+
+        searchRes.on('end', () => {
+          client.destroy();
+          resolve(groups);
+        });
+      });
+    });
+  });
+};

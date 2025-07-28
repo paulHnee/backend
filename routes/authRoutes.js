@@ -1,5 +1,13 @@
 import express from 'express';
-import { login, logout, checkSession, getDashboardData } from '../controllers/authController.js';
+import { 
+  login, 
+  logout, 
+  checkSession, 
+  getDashboardData, 
+  getUserGroups, 
+  checkUserGroup, 
+  searchAvailableGroups 
+} from '../controllers/authController.js';
 import { verifyToken } from '../middleware/authMiddleware.js';
 
 // Create router instance
@@ -20,3 +28,15 @@ router.get('/session', verifyToken, checkSession);
 // Geschützte Route für Dashboard-Daten
 // GET /api/auth/dashboard - Benötigt gültigen JWT Token im Authorization Header
 router.get('/dashboard', verifyToken, getDashboardData);
+
+// Route um Benutzergruppen abzurufen
+// GET /api/auth/groups - Benötigt gültigen JWT Token
+router.get('/groups', verifyToken, getUserGroups);
+
+// Route um Gruppenmitgliedschaft zu überprüfen
+// GET /api/auth/groups/:groupName/check - Benötigt gültigen JWT Token
+router.get('/groups/:groupName/check', verifyToken, checkUserGroup);
+
+// Route um verfügbare Gruppen zu durchsuchen (nur für Admins/ITSZ)
+// GET /api/auth/groups/search?pattern=hnee* - Benötigt gültigen JWT Token und Admin-Rechte
+router.get('/groups/search', verifyToken, searchAvailableGroups);
