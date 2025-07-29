@@ -253,5 +253,3 @@ router.get('/admin/connections', verifyToken, async (req, res) => {
     });
   }
 });
-
-export default router;

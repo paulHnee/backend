@@ -12,10 +12,6 @@ import cookieParser from 'cookie-parser';
 // Security Imports
 import { 
   generalLimiter, 
-  authLimiter, 
-  loginValidation, 
-  handleValidationErrors,
-  forceHTTPS,
   securityMonitoring,
   validatePayloadSize 
 } from './middleware/securityMiddleware.js';
@@ -42,8 +38,8 @@ const app = express();
 // Trust proxy for rate limiting behind reverse proxy
 app.set('trust proxy', 1);
 
-// Force HTTPS in production
-app.use(forceHTTPS);
+// Force HTTPS in production (currently disabled for HTTP setup)
+// app.use(forceHTTPS);
 
 // General rate limiting
 app.use(generalLimiter);
@@ -67,11 +63,8 @@ app.use(cookieParser());
 // Security monitoring middleware
 app.use(securityMonitoring);
 
-// Apply stricter rate limiting and validation to login endpoint
-app.use('/api/login', authLimiter, loginValidation, handleValidationErrors);
-
 // Mount routes
-app.use('/api', authRoutes);  // Auth-Routen unter /api mounten (wie erwartet)
+app.use('/api', authRoutes);  // Auth-Routen unter /api mounten
 app.use('/api/vpn', vpnRoutes); // VPN-Routen unter /api/vpn mounten
 
 // Health check endpoint
@@ -90,7 +83,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Error Handlers (Order matters - these should be last!)
-app.use('*', notFoundHandler);
+app.use(notFoundHandler);
 app.use(globalErrorHandler);
 
 // Produktions-Middleware
@@ -126,6 +119,7 @@ http.createServer(app).listen(PORT, () => {
   });
   
   console.log(`🚀 HNEE Server läuft auf Port ${PORT} (Umgebung: ${environment})`);
-  console.log(`🔒 Sicherheitsfeatures aktiv: Rate Limiting, Input Validation, Security Headers`);
+  console.log(`� Protokoll: HTTP (HTTPS-Redirect deaktiviert)`);
+  console.log(`�🔒 Sicherheitsfeatures aktiv: Rate Limiting, Input Validation, Security Headers`);
   console.log(`📊 Health Check: http://localhost:${PORT}/api/health`);
 });
