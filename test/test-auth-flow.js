@@ -3,8 +3,8 @@
  */
 
 import 'dotenv/config';
-import ldapAuth from './config/ldap.js';
-import { mapUserRoles } from './utils/ldapUtils.js';
+import ldapAuth from '../config/ldap.js';
+import { mapUserRoles } from '../utils/ldapUtils.js';
 
 const testUsername = 'pbuchwald';
 const testPassword = process.env.TEST_PASSWORD;

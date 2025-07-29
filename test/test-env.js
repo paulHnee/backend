@@ -15,7 +15,7 @@ console.log('LDAP_SEARCH_BASE:', process.env.LDAP_SEARCH_BASE);
 console.log('LDAP_SEARCH_FILTER:', process.env.LDAP_SEARCH_FILTER);
 
 // Test LDAP-Verbindung
-import ldapAuth from './config/ldap.js';
+import ldapAuth from '../config/ldap.js';
 
 console.log('\n=== LDAP Test ===');
 try {

@@ -4,7 +4,7 @@
  */
 
 import 'dotenv/config';
-import ldapAuth from './config/ldap.js';
+import ldapAuth from '../config/ldap.js';
 
 // Ersetze 'username' mit dem gewünschten Benutzernamen
 const testUsername = 'pbuchwald'; // Beispiel
