@@ -261,10 +261,13 @@ const ldapAuth = {
                   const groupLower = group.toLowerCase();
                   return groupLower === 'it-mitarbeiter' ||
                          groupLower === 'itszadmins' ||
-                         groupLower === 'mitarbeiter' ||
-                         groupLower === 'studenten' ||
+                         groupLower === 'beschaeftigte' ||
+                         groupLower === 'studierende' ||
                          groupLower === 'gastdozenten' ||
-                         groupLower === 'dozenten';
+                         groupLower === 'lehrende' ||
+                         groupLower === 'dozenten' ||
+                         groupLower === 'mitarbeiter';
+
                 })
               };
               

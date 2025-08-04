@@ -168,22 +168,21 @@ export const mapUserRoles = (userGroups) => {
       roles.canManageUsers = true;
       roles.canViewReports = true;
     }
-    
-    // Allgemeine Mitarbeiter
-    if (groupLower === 'mitarbeiter') {
+
+    // Allgemeine Beschäftigte
+    if (groupLower === 'Mitarbeiter ' || groupLower === 'beschaeftigte') {
       roles.isEmployee = true;
-      roles.canViewReports = true;
     }
-    
-    // Studenten
-    if (groupLower === 'studenten') {
+
+    // Studierende
+    if (groupLower === 'studierende') {
       roles.isStudent = true;
     }
-    
-    // Dozenten
-    if (groupLower === 'dozenten') {
+
+    // Lehrende
+    if (groupLower === 'Dozenten') {
       roles.isLecturer = true;
-      roles.canViewReports = true;
+
     }
     
     // Gastdozenten

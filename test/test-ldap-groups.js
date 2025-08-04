@@ -27,8 +27,8 @@ ldapAuth.getUserInfo(testUsername, (err, userInfo) => {
     console.log(userInfo.roles);
     
     console.log('\n=== Group Check ===');
-    const targetGroups = ['IT-Mitarbeiter', 'ITSZadmins', 'Mitarbeiter', 'Studenten', 'GastDozenten', 'Dozenten'];
-    
+    const targetGroups = ['IT-Mitarbeiter', 'ITSZadmins', 'Beschaeftigte', 'Studierende', 'GastDozenten', 'Lehrende'];
+
     targetGroups.forEach(targetGroup => {
       const hasGroup = userInfo.groups.some(group => 
         group.toLowerCase() === targetGroup.toLowerCase()
