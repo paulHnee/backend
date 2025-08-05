@@ -102,6 +102,7 @@ import {
 // Route Imports
 import { router as authRoutes } from './routes/authRoutes.js';
 import { router as vpnRoutes } from './routes/vpnRoutes.js';
+import { router as adminRoutes } from './routes/adminRoutes.js';
 import { corsOptions } from './config/cors.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -384,11 +385,13 @@ app.get('/api/browser-reset', (req, res) => {
  * Route-Struktur:
  * - /api/* -> authRoutes (Authentifizierung, Session-Management)
  * - /api/vpn/* -> vpnRoutes (VPN-Management-Funktionen)
+ * - /api/admin/* -> adminRoutes (Administrative Funktionen)
  * 
  * @author Paul Buchwald - ITSZ Team
  */
 app.use('/api', authRoutes);  // Auth-Routen unter /api mounten
 app.use('/api/vpn', vpnRoutes); // VPN-Routen unter /api/vpn mounten
+app.use('/api/admin', adminRoutes); // Admin-Routen unter /api/admin mounten
 
 /**
  * Error-Handler (Reihenfolge ist wichtig - diese müssen als letztes definiert werden!)
