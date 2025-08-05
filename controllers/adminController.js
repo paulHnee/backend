@@ -15,14 +15,16 @@
  */
 
 import { logSecurityEvent } from '../utils/securityLogger.js';
+import ldapAuth from '../config/ldap.js';
+import ldapjs from 'ldapjs';
 
 // OPNsense API configuration
 const OPNSENSE_CONFIG = {
   host: 'vpn.hnee.de',
   apiKey: process.env.OPNSENSE_API_KEY || '',
   apiSecret: process.env.OPNSENSE_API_SECRET || '',
-  timeout: 10000, // Increased timeout to 10 seconds
-  retries: 2
+  timeout: 30000, // Increased timeout to 30 seconds
+  retries: 3 // More retries
 };
 
 // Service status tracking
@@ -46,7 +48,12 @@ const opnsenseRequest = async (endpoint, retryCount = 0) => {
     const auth = Buffer.from(`${OPNSENSE_CONFIG.apiKey}:${OPNSENSE_CONFIG.apiSecret}`).toString('base64');
     
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), OPNSENSE_CONFIG.timeout);
+    const timeoutId = setTimeout(() => {
+      console.log(`⏰ Request timeout after ${OPNSENSE_CONFIG.timeout}ms`);
+      controller.abort();
+    }, OPNSENSE_CONFIG.timeout);
+    
+    console.log(`🔗 Making OPNsense API request to: ${endpoint} (attempt ${retryCount + 1})`);
     
     // OPNsense API typically requires POST requests with JSON body
     const response = await fetch(`https://${OPNSENSE_CONFIG.host}/api/${endpoint}`, {
@@ -66,18 +73,200 @@ const opnsenseRequest = async (endpoint, retryCount = 0) => {
       throw new Error(`OPNsense API HTTP ${response.status}: ${response.statusText}`);
     }
 
-    return await response.json();
+    const data = await response.json();
+    console.log(`✅ OPNsense API request successful`);
+    return data;
   } catch (error) {
-    console.error(`OPNsense API request failed (attempt ${retryCount + 1}):`, error.message);
+    console.error(`❌ OPNsense API request failed (attempt ${retryCount + 1}):`, error.message);
     
-    // Retry logic for timeouts
-    if (error.name === 'TimeoutError' && retryCount < OPNSENSE_CONFIG.retries) {
-      console.log(`Retrying OPNsense API request (${retryCount + 1}/${OPNSENSE_CONFIG.retries})`);
-      await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Exponential backoff
+    // Retry logic for timeouts and network errors
+    if ((error.name === 'AbortError' || error.name === 'TimeoutError' || error.code === 'ECONNRESET') 
+        && retryCount < OPNSENSE_CONFIG.retries) {
+      const backoffTime = 2000 * (retryCount + 1); // 2s, 4s, 6s
+      console.log(`🔄 Retrying OPNsense API request in ${backoffTime}ms (${retryCount + 1}/${OPNSENSE_CONFIG.retries})`);
+      await new Promise(resolve => setTimeout(resolve, backoffTime));
       return opnsenseRequest(endpoint, retryCount + 1);
     }
     
     return null;
+  }
+};
+
+/**
+ * Get users from LDAP OUs (Organizational Units) - Real HNEE structure
+ */
+const getUsersFromOU = async (ouPath, ouName) => {
+  return new Promise((resolve) => {
+    try {
+      // Check if LDAP is configured
+      if (!process.env.LDAP_URL) {
+        console.warn(`LDAP not configured, returning empty OU for ${ouName}`);
+        return resolve([]);
+      }
+
+      const client = ldapjs.createClient({
+        url: process.env.LDAP_URL,
+        timeout: 10000,
+        connectTimeout: 5000
+      });
+
+      client.on('error', (err) => {
+        console.error(`LDAP Client Error for OU ${ouName}:`, err);
+        client.destroy();
+        resolve([]);
+      });
+
+      // Bind with service account
+      client.bind(process.env.LDAP_BIND_DN, process.env.LDAP_BIND_CREDENTIALS, (err) => {
+        if (err) {
+          console.error(`LDAP bind failed for OU ${ouName}:`, err);
+          client.destroy();
+          return resolve([]);
+        }
+
+        // Search for users in the specific OU
+        const searchFilter = '(&(objectClass=user)(!(objectClass=computer)))';
+        const searchOptions = {
+          scope: 'sub',
+          filter: searchFilter,
+          attributes: ['sAMAccountName', 'cn', 'mail', 'displayName'],
+          timeLimit: 10
+        };
+
+        client.search(ouPath, searchOptions, (err, searchRes) => {
+          if (err) {
+            console.error(`LDAP search failed for OU ${ouName}:`, err);
+            client.destroy();
+            return resolve([]);
+          }
+
+          let users = [];
+          let searchTimeout = setTimeout(() => {
+            client.destroy();
+            console.warn(`LDAP search timeout for OU ${ouName}`);
+            resolve(users);
+          }, 12000);
+
+          searchRes.on('searchEntry', (entry) => {
+            try {
+              const attributes = entry.pojo ? entry.pojo.attributes : (entry.object || entry.raw);
+              
+              if (attributes) {
+                // Convert attributes array to object if needed
+                let attrObj = {};
+                if (Array.isArray(attributes)) {
+                  attributes.forEach(attr => {
+                    attrObj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
+                  });
+                } else {
+                  attrObj = attributes;
+                }
+                
+                const username = attrObj.sAMAccountName || attrObj.cn;
+                if (username && !username.includes('$')) { // Filter out computer accounts
+                  users.push({
+                    username: username,
+                    displayName: attrObj.displayName || attrObj.cn || username,
+                    mail: attrObj.mail || `${username}@hnee.de`
+                  });
+                }
+              }
+            } catch (parseError) {
+              console.error(`Error parsing user in OU ${ouName}:`, parseError);
+            }
+          });
+
+          searchRes.on('error', (err) => {
+            clearTimeout(searchTimeout);
+            console.error(`LDAP search error for OU ${ouName}:`, err);
+            client.destroy();
+            resolve(users);
+          });
+
+          searchRes.on('end', () => {
+            clearTimeout(searchTimeout);
+            client.destroy();
+            console.log(`Found ${users.length} users in OU ${ouName}`);
+            resolve(users);
+          });
+        });
+      });
+    } catch (error) {
+      console.error(`Unexpected error getting users from OU ${ouName}:`, error);
+      resolve([]);
+    }
+  });
+};
+
+/**
+ * Get real user statistics from LDAP using actual OU structure
+ */
+const getUserStatistics = async () => {
+  try {
+    console.log('📊 Getting real user statistics from HNEE LDAP OUs...');
+    
+    // Get users from different OUs using real HNEE structure
+    const [
+      studentenUsers,
+      angestellteUsers,
+      gastdozentenUsers
+    ] = await Promise.all([
+      getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(() => []),
+      getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(() => []),
+      getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten').catch(() => [])
+    ]);
+
+    // Extract just usernames for deduplication
+    const studentenUsernames = studentenUsers.map(u => u.username);
+    const angestellteUsernames = angestellteUsers.map(u => u.username);
+    const gastdozentenUsernames = gastdozentenUsers.map(u => u.username);
+
+    // Calculate total unique users (removing duplicates)
+    const allUsers = new Set([
+      ...studentenUsernames,
+      ...angestellteUsernames,
+      ...gastdozentenUsernames
+    ]);
+
+    const totalUsers = allUsers.size;
+    // No mock data - activeToday should come from real authentication logs
+    // For now, return 0 until real session tracking is implemented
+    const activeToday = 0; // TODO: Implement real session tracking from auth logs
+
+    return {
+      totalRegistered: totalUsers,
+      activeToday: activeToday,
+      groups: {
+        studenten: studentenUsers.length,
+        angestellte: angestellteUsers.length,
+        gastdozenten: gastdozentenUsers.length,
+        // Keep legacy names for compatibility
+        mitarbeiter: angestellteUsers.length, // Angestellte = employees/staff
+        dozenten: 0, // Will be subset of Angestellte in real implementation
+        itsz: 0 // Will be subset of Angestellte in real implementation
+      },
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('❌ Failed to get LDAP user statistics:', error.message);
+    
+    // If LDAP fails completely, return zero counts (no mock data)
+    console.log('LDAP completely unavailable - returning zero counts (no mock data)');
+    return {
+      totalRegistered: 0,
+      activeToday: 0,
+      groups: {
+        studenten: 0,
+        angestellte: 0,
+        gastdozenten: 0,
+        // Legacy compatibility
+        mitarbeiter: 0,
+        dozenten: 0,
+        itsz: 0
+      },
+      lastUpdated: new Date().toISOString(),
+      source: 'ldap-unavailable'
+    };
   }
 };
 
@@ -107,20 +296,32 @@ const getVPNServerStatus = async () => {
     // Only try API calls if server is reachable
     console.log('Attempting OPNsense API calls...');
     
-    // Try to get WireGuard peer information (most reliable endpoint)
-    const peers = await opnsenseRequest('wireguard/service/show');
+    // Try to get WireGuard service status first (most reliable)
+    const serviceStatus = await opnsenseRequest('wireguard/service/status');
     
-    if (peers) {
-      console.log('Successfully retrieved data from OPNsense API');
-      const activeConnections = peers.peers ? Object.keys(peers.peers).length : 0;
+    if (serviceStatus) {
+      console.log('Successfully retrieved WireGuard service status from OPNsense API');
+      
+      // Get additional server info if service is running
+      let activeConnections = 0;
+      if (serviceStatus.isRunning || serviceStatus.running) {
+        const serverInfo = await opnsenseRequest('wireguard/server/searchServer');
+        if (serverInfo && serverInfo.rows) {
+          // Count active peers from server data
+          activeConnections = serverInfo.rows.reduce((count, server) => {
+            return count + (server.peers ? server.peers.length : 0);
+          }, 0);
+        }
+      }
       
       return {
         serverReachable: true,
-        serviceRunning: true, // If we can get peers, service is running
+        serviceRunning: Boolean(serviceStatus.isRunning || serviceStatus.running),
         activeConnections: activeConnections,
         serverStatus: 'healthy',
         lastChecked: new Date().toISOString(),
-        dataSource: 'opnsense-api'
+        dataSource: 'opnsense-api',
+        serviceInfo: serviceStatus
       };
     }
     
@@ -154,7 +355,7 @@ const getVPNServerStatus = async () => {
 };
 
 /**
- * Basic server connectivity check
+ * Basic server connectivity check with faster timeout
  */
 const checkServerConnectivity = async () => {
   try {
@@ -162,24 +363,29 @@ const checkServerConnectivity = async () => {
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
     
-    const { stdout, stderr } = await execAsync('ping -c 2 -W 2000 vpn.hnee.de');
+    console.log('🏓 Checking server connectivity...');
+    // Faster ping with shorter timeout
+    const { stdout, stderr } = await execAsync('ping -c 1 -W 1000 vpn.hnee.de', { timeout: 3000 });
     
     // Check if we got any successful packets (handle both "packet" and "packets")
     const successMatch = stdout.match(/(\d+) packets? transmitted, (\d+) (?:packets? )?received/);
     if (successMatch) {
       const [, transmitted, received] = successMatch;
-      return parseInt(received) > 0;
+      const isReachable = parseInt(received) > 0;
+      console.log(`🏓 Ping result: ${received}/${transmitted} packets received`);
+      return isReachable;
     }
     
+    console.log('🏓 Ping failed - no response pattern found');
     return false;
   } catch (error) {
-    console.error('Ping failed:', error.message);
+    console.error('🏓 Ping failed:', error.message);
     return false;
   }
 };
 
 /**
- * Check if WireGuard service is running by testing the port
+ * Check if WireGuard service is running by testing the port with faster timeout
  */
 const checkWireGuardService = async () => {
   try {
@@ -187,25 +393,39 @@ const checkWireGuardService = async () => {
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
     
-    // Test if WireGuard port 51820 is accessible
-    const { stdout, stderr } = await execAsync('nc -u -z -v vpn.hnee.de 51820', { timeout: 5000 });
+    console.log('🔌 Checking WireGuard port 51820...');
+    // Test if WireGuard port 51820 is accessible with shorter timeout
+    const { stdout, stderr } = await execAsync('nc -u -z -v vpn.hnee.de 51820', { timeout: 3000 });
     
+    console.log('🔌 WireGuard port is accessible');
     // netcat returns 0 exit code if connection succeeds
     return true;
   } catch (error) {
     // netcat returns non-zero exit code if connection fails
-    console.log('WireGuard port check failed (this may be normal for UDP):', error.message);
+    console.log('🔌 WireGuard port check failed:', error.message);
     return false; // Assume service is down if port check fails
   }
 };
 
 /**
- * Get service portal statistics with real OPNsense data
+ * Get service portal statistics with real LDAP and OPNsense data
  */
 export const getPortalStats = async (req, res) => {
   try {
-    // Get real VPN server status
-    const vpnStatus = await getVPNServerStatus();
+    console.log('📈 Getting comprehensive portal statistics...');
+    
+    // Get real VPN server status and user data in parallel
+    const [vpnStatus, userStats] = await Promise.all([
+      getVPNServerStatus(),
+      getUserStatistics()
+    ]);
+    
+    // Get additional system information for enhanced dashboard
+    const [systemResources, cpuUsage, interfaceInfo] = await Promise.all([
+      opnsenseRequest('diagnostics/system/systemResources'),
+      opnsenseRequest('diagnostics/cpu_usage/stream'), 
+      opnsenseRequest('interfaces/overview/interfacesInfo')
+    ]);
     
     const stats = {
       vpn: {
@@ -219,18 +439,34 @@ export const getPortalStats = async (req, res) => {
         lastChecked: vpnStatus.lastChecked,
         dataSource: vpnStatus.dataSource
       },
+      system: {
+        resources: systemResources ? {
+          memoryUsage: systemResources.memory || {},
+          diskUsage: systemResources.disk || {},
+          loadAverage: systemResources.load || {}
+        } : null,
+        cpu: cpuUsage ? {
+          usage: cpuUsage.cpu || 0,
+          cores: cpuUsage.cores || 1
+        } : null,
+        interfaces: interfaceInfo ? Object.keys(interfaceInfo).length : 0
+      },
       users: {
-        activeToday: 45, // This would come from your application database
-        totalRegistered: 234 // This would come from LDAP or your database
+        totalRegistered: userStats.totalRegistered,
+        activeToday: userStats.activeToday,
+        groups: userStats.groups,
+        lastUpdated: userStats.lastUpdated,
+        dataSource: userStats.source || 'ldap'
       },
       services: serviceStatus,
       timestamp: new Date().toISOString()
     };
     
-    logSecurityEvent(req.user?.username, 'VIEW_PORTAL_STATS', 'Portal stats retrieved');
+    console.log(`✅ Portal stats: ${userStats.totalRegistered} users, VPN ${vpnStatus.serverStatus}`);
+    logSecurityEvent(req.user?.username, 'VIEW_PORTAL_STATS', 'Enhanced portal stats with real data retrieved');
     res.json(stats);
   } catch (error) {
-    console.error('Error getting portal stats:', error);
+    console.error('Error getting enhanced portal stats:', error);
     res.status(500).json({ error: 'Failed to retrieve portal statistics' });
   }
 };
@@ -238,52 +474,95 @@ export const getPortalStats = async (req, res) => {
 
 
 /**
- * LDAP-Benutzerdaten synchronisieren
- * Sync LDAP user data (for user limit management)
+ * LDAP-Benutzerdaten synchronisieren - Real LDAP Operations
+ * Sync LDAP user data with real operations
  */
 export const syncLDAP = async (req, res) => {
   try {
     const adminUser = req.user?.username || 'unknown';
     
-    // This would connect to your LDAP server and sync user groups/limits
-    // For now, we'll simulate the sync process
-    console.log('Starting LDAP synchronization...');
+    console.log('🔄 Starting real LDAP synchronization...');
     
     const syncResult = {
       usersUpdated: 0,
       groupsUpdated: 0,
       errors: [],
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      details: {}
     };
     
     try {
-      // Simulate LDAP sync process
-      // In real implementation, this would:
-      // 1. Connect to LDAP server
-      // 2. Fetch user groups and VPN limits
-      // 3. Update local database/cache
-      // 4. Return sync statistics
+      // Get current user statistics before sync
+      const beforeStats = await getUserStatistics();
       
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate processing time
+      // Try to refresh group memberships and user counts using real HNEE OUs
+      const [
+        studentenUsers,
+        angestellteUsers,
+        gastdozentenUsers
+      ] = await Promise.all([
+        getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(err => {
+          syncResult.errors.push(`Studenten OU sync failed: ${err.message}`);
+          return [];
+        }),
+        getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(err => {
+          syncResult.errors.push(`Angestellte OU sync failed: ${err.message}`);
+          return [];
+        }),
+        getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten').catch(err => {
+          syncResult.errors.push(`Gastdozenten OU sync failed: ${err.message}`);
+          return [];
+        })
+      ]);
+
+      // Calculate updates
+      syncResult.usersUpdated = studentenUsers.length + angestellteUsers.length + gastdozentenUsers.length;
+      syncResult.groupsUpdated = 3; // We checked 3 OUs
       
-      syncResult.usersUpdated = Math.floor(Math.random() * 50) + 10;
-      syncResult.groupsUpdated = Math.floor(Math.random() * 5) + 2;
-      syncResult.success = true;
+      syncResult.details = {
+        groups: {
+          studenten: studentenUsers.length,
+          angestellte: angestellteUsers.length,
+          gastdozenten: gastdozentenUsers.length,
+          // Legacy names for compatibility
+          mitarbeiter: angestellteUsers.length,
+          dozenten: 0, // Subset of Angestellte
+          itsz: 0 // Subset of Angestellte
+        },
+        totalUsers: syncResult.usersUpdated,
+        errorCount: syncResult.errors.length
+      };
       
-      console.log(`LDAP sync completed: ${syncResult.usersUpdated} users, ${syncResult.groupsUpdated} groups updated`);
+      syncResult.success = syncResult.errors.length === 0;
+      
+      console.log(`✅ LDAP sync completed: ${syncResult.usersUpdated} users across ${syncResult.groupsUpdated} OUs`);
+      
+      if (syncResult.errors.length > 0) {
+        console.warn('⚠️  LDAP sync completed with errors:', syncResult.errors);
+      }
       
     } catch (ldapError) {
-      console.error('LDAP sync error:', ldapError);
+      console.error('❌ LDAP sync error:', ldapError);
       syncResult.success = false;
-      syncResult.errors.push(ldapError.message);
+      syncResult.errors.push(`General LDAP error: ${ldapError.message}`);
+      
+      // Try basic fallback sync
+      try {
+        const fallbackStats = await getUserStatistics();
+        syncResult.usersUpdated = fallbackStats.totalRegistered;
+        syncResult.details = { fallback: true, ...fallbackStats };
+      } catch (fallbackError) {
+        syncResult.errors.push(`Fallback sync failed: ${fallbackError.message}`);
+      }
     }
     
-    logSecurityEvent(adminUser, 'SYNC_LDAP', `LDAP-Synchronisation durchgeführt: ${syncResult.success ? 'erfolgreich' : 'fehlgeschlagen'}`);
+    logSecurityEvent(adminUser, 'SYNC_LDAP', 
+      `LDAP-Synchronisation durchgeführt: ${syncResult.success ? 'erfolgreich' : 'fehlgeschlagen'} - ${syncResult.usersUpdated} Benutzer`);
     
     res.json({
       message: syncResult.success 
-        ? `LDAP-Synchronisation erfolgreich abgeschlossen / LDAP sync completed successfully`
-        : `LDAP-Synchronisation fehlgeschlagen / LDAP sync failed`,
+        ? `LDAP-Synchronisation erfolgreich abgeschlossen: ${syncResult.usersUpdated} Benutzer synchronisiert / LDAP sync completed successfully: ${syncResult.usersUpdated} users synced`
+        : `LDAP-Synchronisation teilweise fehlgeschlagen: ${syncResult.errors.length} Fehler / LDAP sync partially failed: ${syncResult.errors.length} errors`,
       result: syncResult
     });
   } catch (error) {
@@ -293,14 +572,82 @@ export const syncLDAP = async (req, res) => {
 };
 
 /**
- * Get detailed WireGuard peer information from OPNsense
+ * Get detailed user information from LDAP
+ */
+export const getUserDetails = async (req, res) => {
+  try {
+    const adminUser = req.user?.username || 'unknown';
+    console.log('👥 Getting detailed user information from LDAP...');
+    
+    // Get comprehensive user statistics
+    const userStats = await getUserStatistics();
+    
+    // Get users from different OUs with details using real HNEE structure
+    const [
+      studentenUsers,
+      angestellteUsers,
+      gastdozentenUsers
+    ] = await Promise.all([
+      getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(() => []),
+      getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(() => []),
+      getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten').catch(() => [])
+    ]);
+
+    logSecurityEvent(adminUser, 'VIEW_USER_DETAILS', 'Detailed user information retrieved');
+    
+    res.json({
+      success: true,
+      statistics: userStats,
+      groups: {
+        studenten: {
+          count: studentenUsers.length,
+          users: studentenUsers.slice(0, 10).map(u => u.username) // Limit to first 10 for performance
+        },
+        angestellte: {
+          count: angestellteUsers.length,
+          users: angestellteUsers.slice(0, 10).map(u => u.username)
+        },
+        gastdozenten: {
+          count: gastdozentenUsers.length,
+          users: gastdozentenUsers.slice(0, 10).map(u => u.username)
+        },
+        // Legacy compatibility
+        mitarbeiter: {
+          count: angestellteUsers.length,
+          users: angestellteUsers.slice(0, 10).map(u => u.username)
+        },
+        dozenten: {
+          count: 0,
+          users: []
+        },
+        itsz: {
+          count: 0,
+          users: []
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting user details:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve user details',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Get detailed WireGuard information from OPNsense using proper API structure
  */
 export const getWireGuardPeers = async (req, res) => {
   try {
-    console.log('Attempting to retrieve WireGuard peers...');
-    const peers = await opnsenseRequest('wireguard/service/show');
+    console.log('Attempting to retrieve WireGuard information using proper API endpoints...');
     
-    if (!peers) {
+    // Get service status first
+    const serviceStatus = await opnsenseRequest('wireguard/service/status');
+    
+    if (!serviceStatus) {
       console.log('OPNsense API unavailable, returning fallback response');
       return res.status(503).json({ 
         error: 'Cannot connect to OPNsense API - credentials may be missing or API may be unreachable',
@@ -310,35 +657,274 @@ export const getWireGuardPeers = async (req, res) => {
       });
     }
 
-    const peerList = peers.peers ? Object.entries(peers.peers).map(([key, peer]) => ({
-      id: key,
-      publicKey: peer.public_key,
-      endpoint: peer.endpoint || 'N/A',
-      allowedIPs: peer.allowed_ips || 'N/A',
-      latestHandshake: peer.latest_handshake || 'Never',
-      transferRx: peer.transfer_rx || '0',
-      transferTx: peer.transfer_tx || '0',
-      persistentKeepalive: peer.persistent_keepalive || 'N/A'
+    // Get server configuration
+    const serverInfo = await opnsenseRequest('wireguard/server/searchServer');
+    
+    // Get client configuration  
+    const clientInfo = await opnsenseRequest('wireguard/client/searchClient');
+    
+    // Get general settings
+    const generalInfo = await opnsenseRequest('wireguard/general/get');
+
+    // Process server data
+    const servers = serverInfo && serverInfo.rows ? serverInfo.rows.map(server => ({
+      uuid: server.uuid,
+      name: server.name || 'Unnamed Server',
+      enabled: Boolean(server.enabled),
+      port: server.port || 'N/A',
+      address: server.address || 'N/A',
+      pubkey: server.pubkey || 'N/A',
+      peers: server.peers || []
     })) : [];
 
-    console.log(`Successfully retrieved ${peerList.length} WireGuard peers`);
-    logSecurityEvent(req.user?.username, 'VIEW_WIREGUARD_PEERS', 'WireGuard peer information retrieved');
+    // Process client data
+    const clients = clientInfo && clientInfo.rows ? clientInfo.rows.map(client => ({
+      uuid: client.uuid,
+      name: client.name || 'Unnamed Client',
+      enabled: Boolean(client.enabled),
+      pubkey: client.pubkey || 'N/A',
+      address: client.address || 'N/A',
+      serveruuid: client.serveruuid || 'N/A',
+      keepalive: client.keepalive || 'N/A'
+    })) : [];
+
+    // Calculate totals
+    const totalPeers = clients.length;
+    const activePeers = clients.filter(client => client.enabled).length;
+
+    console.log(`Successfully retrieved WireGuard configuration: ${servers.length} servers, ${totalPeers} clients`);
+    logSecurityEvent(req.user?.username, 'VIEW_WIREGUARD_CONFIG', 'WireGuard configuration retrieved');
     
     res.json({
       success: true,
-      peers: peerList,
-      totalPeers: peerList.length,
-      serverInfo: {
-        interface: peers.interface || 'N/A',
-        listenPort: peers.listen_port || 'N/A',
-        publicKey: peers.public_key || 'N/A'
+      service: {
+        running: Boolean(serviceStatus.isRunning || serviceStatus.running),
+        status: serviceStatus
+      },
+      servers: servers,
+      clients: clients,
+      statistics: {
+        totalServers: servers.length,
+        enabledServers: servers.filter(s => s.enabled).length,
+        totalClients: totalPeers,
+        enabledClients: activePeers
+      },
+      general: generalInfo || {},
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting WireGuard information:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve WireGuard information',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Get WireGuard service control functions
+ */
+export const getWireGuardServiceStatus = async (req, res) => {
+  try {
+    console.log('Getting WireGuard service status...');
+    const status = await opnsenseRequest('wireguard/service/status');
+    
+    if (!status) {
+      return res.status(503).json({ 
+        error: 'Cannot connect to OPNsense API',
+        fallback: true,
+        serverReachable: await checkServerConnectivity(),
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logSecurityEvent(req.user?.username, 'VIEW_WIREGUARD_SERVICE', 'WireGuard service status retrieved');
+    
+    res.json({
+      success: true,
+      service: {
+        running: Boolean(status.isRunning || status.running),
+        status: status
       },
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error getting WireGuard peers:', error);
+    console.error('Error getting WireGuard service status:', error);
     res.status(500).json({ 
-      error: 'Failed to retrieve WireGuard peer information',
+      error: 'Failed to retrieve WireGuard service status',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Get WireGuard general configuration
+ */
+export const getWireGuardGeneral = async (req, res) => {
+  try {
+    console.log('Getting WireGuard general configuration...');
+    const general = await opnsenseRequest('wireguard/general/get');
+    
+    if (!general) {
+      return res.status(503).json({ 
+        error: 'Cannot connect to OPNsense API',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logSecurityEvent(req.user?.username, 'VIEW_WIREGUARD_GENERAL', 'WireGuard general config retrieved');
+    
+    res.json({
+      success: true,
+      general: general,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting WireGuard general config:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve WireGuard general configuration',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Get comprehensive system diagnostics from OPNsense
+ */
+export const getSystemDiagnostics = async (req, res) => {
+  try {
+    console.log('Getting comprehensive system diagnostics...');
+    
+    // Parallel requests for system information
+    const [
+      systemInfo,
+      systemResources,
+      systemTemp,
+      cpuUsage,
+      interfaceInfo,
+      gatewayStatus,
+      trafficInfo
+    ] = await Promise.all([
+      opnsenseRequest('diagnostics/system/systemInformation'),
+      opnsenseRequest('diagnostics/system/systemResources'),
+      opnsenseRequest('diagnostics/system/systemTemperature'),
+      opnsenseRequest('diagnostics/cpu_usage/stream'),
+      opnsenseRequest('interfaces/overview/interfacesInfo'),
+      opnsenseRequest('routes/gateway/status'),
+      opnsenseRequest('diagnostics/traffic/interface')
+    ]);
+
+    if (!systemInfo && !systemResources) {
+      return res.status(503).json({ 
+        error: 'Cannot connect to OPNsense API for system diagnostics',
+        fallback: true,
+        serverReachable: await checkServerConnectivity(),
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logSecurityEvent(req.user?.username, 'VIEW_SYSTEM_DIAGNOSTICS', 'System diagnostics retrieved');
+    
+    res.json({
+      success: true,
+      system: {
+        information: systemInfo || {},
+        resources: systemResources || {},
+        temperature: systemTemp || {},
+        cpuUsage: cpuUsage || {}
+      },
+      network: {
+        interfaces: interfaceInfo || {},
+        gateways: gatewayStatus || {},
+        traffic: trafficInfo || {}
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting system diagnostics:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve system diagnostics',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Get dashboard information from OPNsense
+ */
+export const getDashboardInfo = async (req, res) => {
+  try {
+    console.log('Getting OPNsense dashboard information...');
+    
+    const dashboardData = await opnsenseRequest('core/dashboard/getDashboard');
+    
+    if (!dashboardData) {
+      return res.status(503).json({ 
+        error: 'Cannot connect to OPNsense API for dashboard',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logSecurityEvent(req.user?.username, 'VIEW_DASHBOARD', 'Dashboard information retrieved');
+    
+    res.json({
+      success: true,
+      dashboard: dashboardData,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting dashboard info:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve dashboard information',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Get firewall diagnostics and logs
+ */
+export const getFirewallDiagnostics = async (req, res) => {
+  try {
+    console.log('Getting firewall diagnostics...');
+    
+    const [
+      pfStates,
+      interfaceNames,
+      vipStatus
+    ] = await Promise.all([
+      opnsenseRequest('diagnostics/firewall/pf_states'),
+      opnsenseRequest('diagnostics/interface/getInterfaceNames'),
+      opnsenseRequest('diagnostics/interface/get_vip_status')
+    ]);
+
+    if (!pfStates && !interfaceNames) {
+      return res.status(503).json({ 
+        error: 'Cannot connect to OPNsense API for firewall diagnostics',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logSecurityEvent(req.user?.username, 'VIEW_FIREWALL_DIAGNOSTICS', 'Firewall diagnostics retrieved');
+    
+    res.json({
+      success: true,
+      firewall: {
+        pfStates: pfStates || {},
+        interfaces: interfaceNames || {},
+        vipStatus: vipStatus || {}
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting firewall diagnostics:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve firewall diagnostics',
       details: error.message,
       timestamp: new Date().toISOString()
     });
