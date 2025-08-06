@@ -1,654 +1,902 @@
 /**
- * Simplified AdminController - Service Portal Management
+ * AdminController - Umfassende Administration für HNEE Service Portal
  * 
- * This controller provides essential admin functions for the HNEE Service Portal.
- * Focused on service management rather than system administration.
+ * ===== ARCHITEKTUR-ÜBERSICHT =====
  * 
- * Features:
- * - Service status monitoring with real OPNsense API data
- * - User limit management
- * - Emergency service controls
- * - Simple audit logging
+ * Dieser Controller implementiert ausschließlich administrative Funktionen für das
+ * HNEE Service Portal. Monitoring-Funktionen wurden bewusst in den Reports-Bereich
+ * (monitoringController.js) ausgelagert um eine klare Trennung der Verantwortlichkeiten
+ * zu gewährleisten.
+ * 
+ * ===== KERN-FUNKTIONALITÄTEN =====
+ * 
+ * 1. BENUTZER-MANAGEMENT:
+ *    - LDAP-Gruppen-Zuordnungen (Hinzufügen/Entfernen)
+ *    - Account-Status-Verwaltung (Aktivieren/Deaktivieren)
+ *    - Passwort-Reset-Funktionalität
+ *    - Batch-Operationen für Massenänderungen
+ * 
+ * 2. SYSTEM-KONFIGURATION:
+ *    - Admin-Parameter-Verwaltung
+ *    - Umgebungsvariablen-Konfiguration
+ *    - Service-Limits und -Einstellungen
+ * 
+ * 3. AUDIT & SICHERHEIT:
+ *    - Vollständige Aktions-Protokollierung
+ *    - Sicherheits-Event-Logging
+ *    - Admin-Benutzer-Anfragen-Management
+ * 
+ * 4. LDAP-INTEGRATION:
+ *    - Direkte Active Directory-Operationen
+ *    - Sichere Admin-Authentifizierung
+ *    - Robuste Fehlerbehandlung
+ * 
+ * ===== SICHERHEITSASPEKTE =====
+ * 
+ * - Alle Funktionen erfordern Admin-Authentifizierung
+ * - Umfassende Sicherheits-Audit-Logs für jede Operation
+ * - Passwort-Stärke-Validierung bei Resets
+ * - LDAP-Verbindungen mit Timeout-Schutz
+ * - Strukturierte Eingabe-Validierung
+ * 
+ * ===== TECHNISCHE IMPLEMENTIERUNG =====
+ * 
+ * - ES6 Module mit named exports
+ * - Express-Route-Handler-Pattern
+ * - Promise-basierte LDAP-Operationen
+ * - Strukturierte Fehlerbehandlung mit HTTP-Status-Codes
+ * - Umgebungsvariablen-basierte Konfiguration
  * 
  * @author Paul Buchwald - ITSZ Team
- * @version 2.0.0 (Simplified)
+ * @version 3.0.0 (Admin-only, Monitoring ausgelagert)
+ * @since 2025-08-06
  */
 
 import { logSecurityEvent } from '../utils/securityLogger.js';
 import ldapAuth from '../config/ldap.js';
 import ldapjs from 'ldapjs';
 
-// OPNsense API configuration
-const OPNSENSE_CONFIG = {
-  host: 'vpn.hnee.de',
-  apiKey: process.env.OPNSENSE_API_KEY || '',
-  apiSecret: process.env.OPNSENSE_API_SECRET || '',
-  timeout: 30000, // Increased timeout to 30 seconds
-  retries: 3 // More retries
-};
+// ===== ADMIN-KONFIGURATION =====
 
-// Service status tracking
-let serviceStatus = {
-  vpn: { enabled: true, message: '' },
-  portal: { enabled: true, message: '' },
-  lastUpdated: new Date().toISOString()
+/**
+ * Zentrale Admin-Konfiguration mit Umgebungsvariablen-Integration
+ * 
+ * Diese Konfiguration steuert das Verhalten aller administrativen Funktionen:
+ * - Benutzer-Limits für Systemschutz
+ * - Feature-Flags für verschiedene Admin-Operationen
+ * - Sicherheits-Einstellungen für kritische Aktionen
+ * 
+ * Umgebungsvariablen:
+ * - MAX_USER_LIMIT: Maximale Anzahl verwaltbarer Benutzer (Standard: 5000)
+ * - ALLOW_USER_CREATION: Benutzer-Erstellung erlauben (true/false)
+ * - ALLOW_USER_DELETION: Benutzer-Löschung erlauben (true/false)
+ * - REQUIRE_ADMIN_APPROVAL: Admin-Genehmigung für kritische Aktionen (true/false)
+ */
+const ADMIN_CONFIG = {
+  maxUserLimit: process.env.MAX_USER_LIMIT || 5000,           // Maximale Benutzeranzahl
+  allowUserCreation: process.env.ALLOW_USER_CREATION === 'true', // Benutzer-Erstellung
+  allowUserDeletion: process.env.ALLOW_USER_DELETION === 'true', // Benutzer-Löschung
+  requireAdminApproval: process.env.REQUIRE_ADMIN_APPROVAL === 'true' // Genehmigungspflicht
 };
 
 /**
- * Make authenticated request to OPNsense API with better error handling
+ * LDAP-Client für Administrative Operationen erstellen
+ * 
+ * Diese Funktion erstellt einen speziell konfigurierten LDAP-Client für
+ * administrative Operationen im Active Directory:
+ * 
+ * Konfiguration:
+ * - Erweiterte Timeouts für komplexe Admin-Operationen (15s/10s)
+ * - Direkte LDAP-URL-Verbindung ohne Connection-Pooling
+ * - Fehlerbehandlung bei fehlender LDAP-Konfiguration
+ * 
+ * Verwendung:
+ * - Benutzer-Management-Operationen
+ * - Gruppen-Mitgliedschafts-Änderungen
+ * - Account-Status-Modifikationen
+ * - Passwort-Reset-Funktionen
+ * 
+ * Sicherheitsaspekte:
+ * - Client wird nach jeder Operation ordnungsgemäß zerstört
+ * - Timeouts verhindern hängende Verbindungen
+ * - Konfigurationsprüfung vor Client-Erstellung
+ * 
+ * @returns {Object} ldapjs Client-Instanz für Admin-Operationen
+ * @throws {Error} Falls LDAP nicht konfiguriert ist
  */
-const opnsenseRequest = async (endpoint, retryCount = 0) => {
-  try {
-    // Check if API credentials are configured
-    if (!OPNSENSE_CONFIG.apiKey || !OPNSENSE_CONFIG.apiSecret) {
-      console.warn('OPNsense API credentials not configured, skipping API call');
-      return null;
-    }
-
-    const auth = Buffer.from(`${OPNSENSE_CONFIG.apiKey}:${OPNSENSE_CONFIG.apiSecret}`).toString('base64');
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      console.log(`⏰ Request timeout after ${OPNSENSE_CONFIG.timeout}ms`);
-      controller.abort();
-    }, OPNSENSE_CONFIG.timeout);
-    
-    console.log(`🔗 Making OPNsense API request to: ${endpoint} (attempt ${retryCount + 1})`);
-    
-    // OPNsense API typically requires POST requests with JSON body
-    const response = await fetch(`https://${OPNSENSE_CONFIG.host}/api/${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'HNEE-ServicePortal/2.0'
-      },
-      body: JSON.stringify({}), // Empty JSON body for most read operations
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`OPNsense API HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    console.log(`✅ OPNsense API request successful`);
-    return data;
-  } catch (error) {
-    console.error(`❌ OPNsense API request failed (attempt ${retryCount + 1}):`, error.message);
-    
-    // Retry logic for timeouts and network errors
-    if ((error.name === 'AbortError' || error.name === 'TimeoutError' || error.code === 'ECONNRESET') 
-        && retryCount < OPNSENSE_CONFIG.retries) {
-      const backoffTime = 2000 * (retryCount + 1); // 2s, 4s, 6s
-      console.log(`🔄 Retrying OPNsense API request in ${backoffTime}ms (${retryCount + 1}/${OPNSENSE_CONFIG.retries})`);
-      await new Promise(resolve => setTimeout(resolve, backoffTime));
-      return opnsenseRequest(endpoint, retryCount + 1);
-    }
-    
-    return null;
+const createAdminLdapClient = () => {
+  // ===== VORBEDINGUNGEN PRÜFEN =====
+  
+  if (!process.env.LDAP_URL) {
+    throw new Error('LDAP-Server nicht konfiguriert - LDAP_URL Umgebungsvariable fehlt');
   }
-};
 
-/**
- * Get users from LDAP OUs (Organizational Units) - Real HNEE structure
- */
-const getUsersFromOU = async (ouPath, ouName) => {
-  return new Promise((resolve) => {
-    try {
-      // Check if LDAP is configured
-      if (!process.env.LDAP_URL) {
-        console.warn(`LDAP not configured, returning empty OU for ${ouName}`);
-        return resolve([]);
-      }
-
-      const client = ldapjs.createClient({
-        url: process.env.LDAP_URL,
-        timeout: 10000,
-        connectTimeout: 5000
-      });
-
-      client.on('error', (err) => {
-        console.error(`LDAP Client Error for OU ${ouName}:`, err);
-        client.destroy();
-        resolve([]);
-      });
-
-      // Bind with service account
-      client.bind(process.env.LDAP_BIND_DN, process.env.LDAP_BIND_CREDENTIALS, (err) => {
-        if (err) {
-          console.error(`LDAP bind failed for OU ${ouName}:`, err);
-          client.destroy();
-          return resolve([]);
-        }
-
-        // Search for users in the specific OU
-        const searchFilter = '(&(objectClass=user)(!(objectClass=computer)))';
-        const searchOptions = {
-          scope: 'sub',
-          filter: searchFilter,
-          attributes: ['sAMAccountName', 'cn', 'mail', 'displayName'],
-          timeLimit: 10
-        };
-
-        client.search(ouPath, searchOptions, (err, searchRes) => {
-          if (err) {
-            console.error(`LDAP search failed for OU ${ouName}:`, err);
-            client.destroy();
-            return resolve([]);
-          }
-
-          let users = [];
-          let searchTimeout = setTimeout(() => {
-            client.destroy();
-            console.warn(`LDAP search timeout for OU ${ouName}`);
-            resolve(users);
-          }, 12000);
-
-          searchRes.on('searchEntry', (entry) => {
-            try {
-              const attributes = entry.pojo ? entry.pojo.attributes : (entry.object || entry.raw);
-              
-              if (attributes) {
-                // Convert attributes array to object if needed
-                let attrObj = {};
-                if (Array.isArray(attributes)) {
-                  attributes.forEach(attr => {
-                    attrObj[attr.type] = attr.values.length === 1 ? attr.values[0] : attr.values;
-                  });
-                } else {
-                  attrObj = attributes;
-                }
-                
-                const username = attrObj.sAMAccountName || attrObj.cn;
-                if (username && !username.includes('$')) { // Filter out computer accounts
-                  users.push({
-                    username: username,
-                    displayName: attrObj.displayName || attrObj.cn || username,
-                    mail: attrObj.mail || `${username}@hnee.de`
-                  });
-                }
-              }
-            } catch (parseError) {
-              console.error(`Error parsing user in OU ${ouName}:`, parseError);
-            }
-          });
-
-          searchRes.on('error', (err) => {
-            clearTimeout(searchTimeout);
-            console.error(`LDAP search error for OU ${ouName}:`, err);
-            client.destroy();
-            resolve(users);
-          });
-
-          searchRes.on('end', () => {
-            clearTimeout(searchTimeout);
-            client.destroy();
-            console.log(`Found ${users.length} users in OU ${ouName}`);
-            resolve(users);
-          });
-        });
-      });
-    } catch (error) {
-      console.error(`Unexpected error getting users from OU ${ouName}:`, error);
-      resolve([]);
-    }
+  // ===== ADMIN-LDAP-CLIENT ERSTELLEN =====
+  
+  return ldapjs.createClient({
+    url: process.env.LDAP_URL,      // LDAP-Server-URL aus Umgebungsvariable
+    timeout: 15000,                 // 15 Sekunden Timeout für Admin-Operationen
+    connectTimeout: 10000           // 10 Sekunden Verbindungs-Timeout
   });
 };
 
 /**
- * Get real user statistics from LDAP using actual OU structure
+ * Benutzer zu LDAP-Gruppe hinzufügen - Administrative Gruppenverwaltung
+ * 
+ * Diese Funktion ermöglicht es Administratoren, Benutzer zu Active Directory-Gruppen
+ * hinzuzufügen. Dies ist eine kritische Admin-Funktion für Rechteverwaltung.
+ * 
+ * Funktionalitäten:
+ * - Sichere LDAP-Admin-Authentifizierung
+ * - Strukturierte Eingabe-Validierung
+ * - Atomare Gruppen-Mitgliedschafts-Operation
+ * - Umfassende Sicherheits-Audit-Protokollierung
+ * - Robuste Fehlerbehandlung mit Cleanup
+ * 
+ * Sicherheitsaspekte:
+ * - Verwendet Admin-LDAP-Anmeldedaten (LDAP_ADMIN_DN/PASSWORD)
+ * - Vollständige Protokollierung für Compliance
+ * - Client-Cleanup nach jeder Operation
+ * 
+ * Active Directory Integration:
+ * - Modifiziert 'member'-Attribut der Zielgruppe
+ * - Verwendet vollständige DN-Pfade für Eindeutigkeit
+ * - Unterstützt Standard-HNEE-OU-Struktur
+ * 
+ * @param {Object} req - Express Request mit { username, groupDN }
+ * @param {Object} res - Express Response mit Erfolg/Fehler-Status
  */
-const getUserStatistics = async () => {
+export const addUserToGroup = async (req, res) => {
   try {
-    console.log('📊 Getting real user statistics from HNEE LDAP OUs...');
+    console.log('👥 Admin-Gruppenverwaltung: Benutzer zu Gruppe hinzufügen...');
     
-    // Get users from different OUs using real HNEE structure
-    const [
-      studentenUsers,
-      angestellteUsers,
-      gastdozentenUsers
-    ] = await Promise.all([
-      getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(() => []),
-      getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(() => []),
-      getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten').catch(() => [])
-    ]);
-
-    // Extract just usernames for deduplication
-    const studentenUsernames = studentenUsers.map(u => u.username);
-    const angestellteUsernames = angestellteUsers.map(u => u.username);
-    const gastdozentenUsernames = gastdozentenUsers.map(u => u.username);
-
-    // Calculate total unique users (removing duplicates)
-    const allUsers = new Set([
-      ...studentenUsernames,
-      ...angestellteUsernames,
-      ...gastdozentenUsernames
-    ]);
-
-    const totalUsers = allUsers.size;
-    // No mock data - activeToday should come from real authentication logs
-    // For now, return 0 until real session tracking is implemented
-    const activeToday = 0; // TODO: Implement real session tracking from auth logs
-
-    return {
-      totalRegistered: totalUsers,
-      activeToday: activeToday,
-      groups: {
-        studenten: studentenUsers.length,
-        angestellte: angestellteUsers.length,
-        gastdozenten: gastdozentenUsers.length,
-        // Keep legacy names for compatibility
-        mitarbeiter: angestellteUsers.length, // Angestellte = employees/staff
-        dozenten: 0, // Will be subset of Angestellte in real implementation
-        itsz: 0 // Will be subset of Angestellte in real implementation
-      },
-      lastUpdated: new Date().toISOString()
-    };
-  } catch (error) {
-    console.error('❌ Failed to get LDAP user statistics:', error.message);
+    // ===== ADMIN-BENUTZER IDENTIFIZIEREN =====
     
-    // If LDAP fails completely, return zero counts (no mock data)
-    console.log('LDAP completely unavailable - returning zero counts (no mock data)');
-    return {
-      totalRegistered: 0,
-      activeToday: 0,
-      groups: {
-        studenten: 0,
-        angestellte: 0,
-        gastdozenten: 0,
-        // Legacy compatibility
-        mitarbeiter: 0,
-        dozenten: 0,
-        itsz: 0
-      },
-      lastUpdated: new Date().toISOString(),
-      source: 'ldap-unavailable'
-    };
-  }
-};
-
-/**
- * Get real VPN status from OPNsense with improved fallback
- */
-const getVPNServerStatus = async () => {
-  console.log('Getting VPN server status...');
-  
-  try {
-    // First, check basic connectivity
-    const serverReachable = await checkServerConnectivity();
-    console.log(`Server reachable via ping: ${serverReachable}`);
-    
-    if (!serverReachable) {
-      return {
-        serverReachable: false,
-        serviceRunning: false,
-        activeConnections: 0,
-        serverStatus: 'unreachable',
-        lastChecked: new Date().toISOString(),
-        dataSource: 'ping-failed',
-        error: 'Server not reachable via ping'
-      };
-    }
-
-    // Only try API calls if server is reachable
-    console.log('Attempting OPNsense API calls...');
-    
-    // Try to get WireGuard service status first (most reliable)
-    const serviceStatus = await opnsenseRequest('wireguard/service/status');
-    
-    if (serviceStatus) {
-      console.log('Successfully retrieved WireGuard service status from OPNsense API');
-      
-      // Get additional server info if service is running
-      let activeConnections = 0;
-      if (serviceStatus.isRunning || serviceStatus.running) {
-        const serverInfo = await opnsenseRequest('wireguard/server/searchServer');
-        if (serverInfo && serverInfo.rows) {
-          // Count active peers from server data
-          activeConnections = serverInfo.rows.reduce((count, server) => {
-            return count + (server.peers ? server.peers.length : 0);
-          }, 0);
-        }
-      }
-      
-      return {
-        serverReachable: true,
-        serviceRunning: Boolean(serviceStatus.isRunning || serviceStatus.running),
-        activeConnections: activeConnections,
-        serverStatus: 'healthy',
-        lastChecked: new Date().toISOString(),
-        dataSource: 'opnsense-api',
-        serviceInfo: serviceStatus
-      };
-    }
-    
-    // API failed but server is reachable - check WireGuard port
-    console.log('API failed, checking WireGuard service port...');
-    const serviceRunning = await checkWireGuardService();
-    
-    return {
-      serverReachable: true,
-      serviceRunning: serviceRunning,
-      activeConnections: 0,
-      serverStatus: serviceRunning ? 'api-error' : 'service-down',
-      lastChecked: new Date().toISOString(),
-      dataSource: 'port-check',
-      error: 'OPNsense API unavailable'
-    };
-
-  } catch (error) {
-    console.error('Error getting VPN server status:', error);
-    
-    return {
-      serverReachable: false,
-      serviceRunning: false,
-      activeConnections: 0,
-      serverStatus: 'error',
-      error: error.message,
-      lastChecked: new Date().toISOString(),
-      dataSource: 'error-fallback'
-    };
-  }
-};
-
-/**
- * Basic server connectivity check with faster timeout
- */
-const checkServerConnectivity = async () => {
-  try {
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    
-    console.log('🏓 Checking server connectivity...');
-    // Faster ping with shorter timeout
-    const { stdout, stderr } = await execAsync('ping -c 1 -W 1000 vpn.hnee.de', { timeout: 3000 });
-    
-    // Check if we got any successful packets (handle both "packet" and "packets")
-    const successMatch = stdout.match(/(\d+) packets? transmitted, (\d+) (?:packets? )?received/);
-    if (successMatch) {
-      const [, transmitted, received] = successMatch;
-      const isReachable = parseInt(received) > 0;
-      console.log(`🏓 Ping result: ${received}/${transmitted} packets received`);
-      return isReachable;
-    }
-    
-    console.log('🏓 Ping failed - no response pattern found');
-    return false;
-  } catch (error) {
-    console.error('🏓 Ping failed:', error.message);
-    return false;
-  }
-};
-
-/**
- * Check if WireGuard service is running by testing the port with faster timeout
- */
-const checkWireGuardService = async () => {
-  try {
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    
-    console.log('🔌 Checking WireGuard port 51820...');
-    // Test if WireGuard port 51820 is accessible with shorter timeout
-    const { stdout, stderr } = await execAsync('nc -u -z -v vpn.hnee.de 51820', { timeout: 3000 });
-    
-    console.log('🔌 WireGuard port is accessible');
-    // netcat returns 0 exit code if connection succeeds
-    return true;
-  } catch (error) {
-    // netcat returns non-zero exit code if connection fails
-    console.log('🔌 WireGuard port check failed:', error.message);
-    return false; // Assume service is down if port check fails
-  }
-};
-
-/**
- * Get service portal statistics with real LDAP and OPNsense data
- */
-export const getPortalStats = async (req, res) => {
-  try {
-    console.log('📈 Getting comprehensive portal statistics...');
-    
-    // Get real VPN server status and user data in parallel
-    const [vpnStatus, userStats] = await Promise.all([
-      getVPNServerStatus(),
-      getUserStatistics()
-    ]);
-    
-    const stats = {
-      vpn: {
-        totalConnections: vpnStatus.activeConnections || 0,
-        activeConnections: vpnStatus.activeConnections || 0,
-        serverStatus: vpnStatus.serverStatus,
-        serverReachable: vpnStatus.serverReachable,
-        serviceRunning: vpnStatus.serviceRunning,
-        lastChecked: vpnStatus.lastChecked,
-        dataSource: vpnStatus.dataSource
-      },
-      users: {
-        totalRegistered: userStats.totalRegistered,
-        activeToday: userStats.activeToday,
-        groups: userStats.groups,
-        lastUpdated: userStats.lastUpdated,
-        dataSource: userStats.source || 'ldap'
-      },
-      services: serviceStatus,
-      timestamp: new Date().toISOString()
-    };
-    
-    console.log(`✅ Portal stats: ${userStats.totalRegistered} users, VPN ${vpnStatus.serverStatus}`);
-    logSecurityEvent(req.user?.username, 'VIEW_PORTAL_STATS', 'Enhanced portal stats with real data retrieved');
-    res.json(stats);
-  } catch (error) {
-    console.error('Error getting enhanced portal stats:', error);
-    res.status(500).json({ error: 'Failed to retrieve portal statistics' });
-  }
-};
-
-
-
-/**
- * LDAP-Benutzerdaten synchronisieren - Real LDAP Operations
- * Sync LDAP user data with real operations
- */
-export const syncLDAP = async (req, res) => {
-  try {
     const adminUser = req.user?.username || 'unknown';
     
-    console.log('🔄 Starting real LDAP synchronization...');
+    // ===== EINGABE-VALIDIERUNG =====
     
-    const syncResult = {
-      usersUpdated: 0,
-      groupsUpdated: 0,
-      errors: [],
-      timestamp: new Date().toISOString(),
-      details: {}
-    };
-    
-    try {
-      // Get current user statistics before sync
-      const beforeStats = await getUserStatistics();
-      
-      // Try to refresh group memberships and user counts using real HNEE OUs
-      const [
-        studentenUsers,
-        angestellteUsers,
-        gastdozentenUsers
-      ] = await Promise.all([
-        getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(err => {
-          syncResult.errors.push(`Studenten OU sync failed: ${err.message}`);
-          return [];
-        }),
-        getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(err => {
-          syncResult.errors.push(`Angestellte OU sync failed: ${err.message}`);
-          return [];
-        }),
-        getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten').catch(err => {
-          syncResult.errors.push(`Gastdozenten OU sync failed: ${err.message}`);
-          return [];
-        })
-      ]);
+    const { username, groupDN } = req.body;
 
-      // Calculate updates
-      syncResult.usersUpdated = studentenUsers.length + angestellteUsers.length + gastdozentenUsers.length;
-      syncResult.groupsUpdated = 3; // We checked 3 OUs
-      
-      syncResult.details = {
-        groups: {
-          studenten: studentenUsers.length,
-          angestellte: angestellteUsers.length,
-          gastdozenten: gastdozentenUsers.length,
-          // Legacy names for compatibility
-          mitarbeiter: angestellteUsers.length,
-          dozenten: 0, // Subset of Angestellte
-          itsz: 0 // Subset of Angestellte
-        },
-        totalUsers: syncResult.usersUpdated,
-        errorCount: syncResult.errors.length
-      };
-      
-      syncResult.success = syncResult.errors.length === 0;
-      
-      console.log(`✅ LDAP sync completed: ${syncResult.usersUpdated} users across ${syncResult.groupsUpdated} OUs`);
-      
-      if (syncResult.errors.length > 0) {
-        console.warn('⚠️  LDAP sync completed with errors:', syncResult.errors);
-      }
-      
-    } catch (ldapError) {
-      console.error('❌ LDAP sync error:', ldapError);
-      syncResult.success = false;
-      syncResult.errors.push(`General LDAP error: ${ldapError.message}`);
-      
-      // Try basic fallback sync
-      try {
-        const fallbackStats = await getUserStatistics();
-        syncResult.usersUpdated = fallbackStats.totalRegistered;
-        syncResult.details = { fallback: true, ...fallbackStats };
-      } catch (fallbackError) {
-        syncResult.errors.push(`Fallback sync failed: ${fallbackError.message}`);
-      }
-    }
-    
-    logSecurityEvent(adminUser, 'SYNC_LDAP', 
-      `LDAP-Synchronisation durchgeführt: ${syncResult.success ? 'erfolgreich' : 'fehlgeschlagen'} - ${syncResult.usersUpdated} Benutzer`);
-    
-    res.json({
-      message: syncResult.success 
-        ? `LDAP-Synchronisation erfolgreich abgeschlossen: ${syncResult.usersUpdated} Benutzer synchronisiert / LDAP sync completed successfully: ${syncResult.usersUpdated} users synced`
-        : `LDAP-Synchronisation teilweise fehlgeschlagen: ${syncResult.errors.length} Fehler / LDAP sync partially failed: ${syncResult.errors.length} errors`,
-      result: syncResult
-    });
-  } catch (error) {
-    console.error('Error during LDAP sync:', error);
-    res.status(500).json({ error: 'Fehler bei LDAP-Synchronisation / Failed to sync LDAP data' });
-  }
-};
-
-/**
- * Get detailed user information from LDAP
- */
-export const getUserDetails = async (req, res) => {
-  try {
-    const adminUser = req.user?.username || 'unknown';
-    console.log('👥 Getting detailed user information from LDAP...');
-    
-    // Get comprehensive user statistics
-    const userStats = await getUserStatistics();
-    
-    // Get users from different OUs with details using real HNEE structure
-    const [
-      studentenUsers,
-      angestellteUsers,
-      gastdozentenUsers
-    ] = await Promise.all([
-      getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(() => []),
-      getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(() => []),
-      getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten').catch(() => [])
-    ]);
-
-    logSecurityEvent(adminUser, 'VIEW_USER_DETAILS', 'Detailed user information retrieved');
-    
-    res.json({
-      success: true,
-      statistics: userStats,
-      groups: {
-        studenten: {
-          count: studentenUsers.length,
-          users: studentenUsers.slice(0, 10).map(u => u.username) // Limit to first 10 for performance
-        },
-        angestellte: {
-          count: angestellteUsers.length,
-          users: angestellteUsers.slice(0, 10).map(u => u.username)
-        },
-        gastdozenten: {
-          count: gastdozentenUsers.length,
-          users: gastdozentenUsers.slice(0, 10).map(u => u.username)
-        },
-        // Legacy compatibility
-        mitarbeiter: {
-          count: angestellteUsers.length,
-          users: angestellteUsers.slice(0, 10).map(u => u.username)
-        },
-        dozenten: {
-          count: 0,
-          users: []
-        },
-        itsz: {
-          count: 0,
-          users: []
-        }
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error getting user details:', error);
-    res.status(500).json({ 
-      error: 'Failed to retrieve user details',
-      details: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-};
-
-/**
- * Get WireGuard service control functions
- */
-export const getWireGuardServiceStatus = async (req, res) => {
-  try {
-    console.log('Getting WireGuard service status...');
-    const status = await opnsenseRequest('wireguard/service/status');
-    
-    if (!status) {
-      return res.status(503).json({ 
-        error: 'Cannot connect to OPNsense API',
-        fallback: true,
-        serverReachable: await checkServerConnectivity(),
-        timestamp: new Date().toISOString()
+    if (!username || !groupDN) {
+      console.warn(`⚠️ Unvollständige Eingabe von Admin ${adminUser}: username=${username}, groupDN=${groupDN}`);
+      return res.status(400).json({ 
+        error: 'Username und Group DN sind beide erforderlich',
+        required: ['username', 'groupDN'],
+        received: { username: Boolean(username), groupDN: Boolean(groupDN) }
       });
     }
 
-    logSecurityEvent(req.user?.username, 'VIEW_WIREGUARD_SERVICE', 'WireGuard service status retrieved');
+    console.log(`📝 Füge Benutzer ${username} zu Gruppe ${groupDN} hinzu (Admin: ${adminUser})`);
+
+    // ===== LDAP-CLIENT ERSTELLEN =====
     
+    const client = createAdminLdapClient();
+
+    try {
+      // ===== ADMIN-AUTHENTIFIZIERUNG =====
+      
+      // Promise-Wrapper für callback-basierte LDAP-Bind-Operation
+      await new Promise((resolve, reject) => {
+        client.bind(process.env.LDAP_ADMIN_DN, process.env.LDAP_ADMIN_PASSWORD, (err) => {
+          if (err) {
+            console.error('❌ Admin-LDAP-Authentifizierung fehlgeschlagen:', err.message);
+            reject(new Error(`LDAP Admin-Anmeldung fehlgeschlagen: ${err.message}`));
+          } else {
+            console.log('✅ Admin-LDAP-Authentifizierung erfolgreich');
+            resolve();
+          }
+        });
+      });
+
+      // ===== GRUPPEN-MITGLIEDSCHAFT HINZUFÜGEN =====
+      
+      // Konstruiere vollständigen Benutzer-DN basierend auf HNEE-OU-Struktur
+      const userDN = `CN=${username},OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de`;
+      
+      // LDAP-Modifikations-Operation: Member zu Gruppe hinzufügen
+      const modification = {
+        operation: 'add',                    // Add-Operation für neues Gruppen-Mitglied
+        modification: {
+          member: userDN                     // Vollständiger DN des hinzuzufügenden Benutzers
+        }
+      };
+
+      console.log(`🔧 Führe LDAP-Modifikation durch: Füge ${userDN} zu ${groupDN} hinzu`);
+
+      // Promise-Wrapper für callback-basierte LDAP-Modify-Operation
+      await new Promise((resolve, reject) => {
+        client.modify(groupDN, modification, (err) => {
+          if (err) {
+            console.error('❌ LDAP-Gruppenmodifikation fehlgeschlagen:', err.message);
+            reject(new Error(`Gruppenmitgliedschaft-Hinzufügung fehlgeschlagen: ${err.message}`));
+          } else {
+            console.log('✅ LDAP-Gruppenmodifikation erfolgreich');
+            resolve();
+          }
+        });
+      });
+
+    } finally {
+      // ===== LDAP-CLIENT CLEANUP =====
+      
+      // Client immer ordnungsgemäß zerstören (auch bei Fehlern)
+      client.destroy();
+      console.log('🧹 LDAP-Client ordnungsgemäß bereinigt');
+    }
+
+    // ===== SICHERHEITS-AUDIT-LOGGING =====
+    
+    logSecurityEvent(
+      adminUser, 
+      'ADD_USER_TO_GROUP', 
+      `Benutzer ${username} erfolgreich zu LDAP-Gruppe ${groupDN} hinzugefügt`
+    );
+
+    // ===== ERFOLGSANTWORT =====
+    
+    console.log(`✅ Gruppenmitgliedschaft erfolgreich: ${username} → ${groupDN}`);
+
     res.json({
       success: true,
-      service: {
-        running: Boolean(status.isRunning || status.running),
-        status: status
+      message: `Benutzer ${username} erfolgreich zur Gruppe hinzugefügt`,
+      operation: {
+        user: username,
+        group: groupDN,
+        action: 'add',
+        performedBy: adminUser
       },
       timestamp: new Date().toISOString()
     });
+
   } catch (error) {
-    console.error('Error getting WireGuard service status:', error);
+    // ===== UMFASSENDE FEHLERBEHANDLUNG =====
+    
+    console.error('❌ Fehler beim Hinzufügen zur Gruppe:', error);
+    
     res.status(500).json({ 
-      error: 'Failed to retrieve WireGuard service status',
+      error: 'Fehler beim Hinzufügen zur Gruppe',
       details: error.message,
+      troubleshooting: {
+        checkLdapConfig: 'Prüfe LDAP-Admin-Anmeldedaten',
+        checkUserExists: 'Prüfe ob Benutzer existiert',
+        checkGroupExists: 'Prüfe ob Gruppe existiert',
+        checkPermissions: 'Prüfe Admin-Berechtigungen'
+      },
       timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Benutzer aus LDAP-Gruppe entfernen - Administrative Gruppenverwaltung
+ * 
+ * Diese Funktion ermöglicht das Entfernen von Benutzern aus Active Directory-Gruppen.
+ * Kritisch für Rechteverwaltung bei Rollenänderungen oder Austritten.
+ * 
+ * Funktionalitäten:
+ * - Sichere LDAP-Admin-Authentifizierung
+ * - Atomare Gruppen-Mitgliedschafts-Entfernung
+ * - Vollständige Audit-Protokollierung
+ * - Robuste Fehlerbehandlung mit detailliertem Troubleshooting
+ * 
+ * Sicherheitsaspekte:
+ * - Kritische Operation erfordert Admin-Berechtigung
+ * - Vollständige Protokollierung für Compliance-Audits
+ * - Sichere LDAP-Client-Behandlung
+ * 
+ * Active Directory Integration:
+ * - Modifiziert 'member'-Attribut der Zielgruppe (DELETE-Operation)
+ * - Verwendet vollständige DN-Pfade für Eindeutigkeit
+ * - Berücksichtigt HNEE-OU-Struktur
+ * 
+ * @param {Object} req - Express Request mit { username, groupDN }
+ * @param {Object} res - Express Response mit Erfolg/Fehler-Status
+ */
+export const removeUserFromGroup = async (req, res) => {
+  try {
+    console.log('👥 Admin-Gruppenverwaltung: Benutzer aus Gruppe entfernen...');
+    
+    // ===== ADMIN-BENUTZER IDENTIFIZIEREN =====
+    
+    const adminUser = req.user?.username || 'unknown';
+    
+    // ===== EINGABE-VALIDIERUNG =====
+    
+    const { username, groupDN } = req.body;
+
+    if (!username || !groupDN) {
+      console.warn(`⚠️ Unvollständige Eingabe von Admin ${adminUser}: username=${username}, groupDN=${groupDN}`);
+      return res.status(400).json({ 
+        error: 'Username und Group DN sind beide erforderlich für Gruppen-Entfernung',
+        required: ['username', 'groupDN'],
+        received: { username: Boolean(username), groupDN: Boolean(groupDN) }
+      });
+    }
+
+    console.log(`📝 Entferne Benutzer ${username} aus Gruppe ${groupDN} (Admin: ${adminUser})`);
+
+    // ===== LDAP-CLIENT ERSTELLEN =====
+    
+    const client = createAdminLdapClient();
+
+    try {
+      // ===== ADMIN-AUTHENTIFIZIERUNG =====
+      
+      await new Promise((resolve, reject) => {
+        client.bind(process.env.LDAP_ADMIN_DN, process.env.LDAP_ADMIN_PASSWORD, (err) => {
+          if (err) {
+            console.error('❌ Admin-LDAP-Authentifizierung fehlgeschlagen:', err.message);
+            reject(new Error(`LDAP Admin-Anmeldung fehlgeschlagen: ${err.message}`));
+          } else {
+            console.log('✅ Admin-LDAP-Authentifizierung erfolgreich');
+            resolve();
+          }
+        });
+      });
+
+      // ===== GRUPPEN-MITGLIEDSCHAFT ENTFERNEN =====
+      
+      // Konstruiere vollständigen Benutzer-DN
+      const userDN = `CN=${username},OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de`;
+      
+      // LDAP-Modifikations-Operation: Member aus Gruppe entfernen
+      const modification = {
+        operation: 'delete',                 // Delete-Operation für Gruppen-Mitglied
+        modification: {
+          member: userDN                     // Vollständiger DN des zu entfernenden Benutzers
+        }
+      };
+
+      console.log(`🔧 Führe LDAP-Modifikation durch: Entferne ${userDN} aus ${groupDN}`);
+
+      // Promise-Wrapper für LDAP-Modify-Operation
+      await new Promise((resolve, reject) => {
+        client.modify(groupDN, modification, (err) => {
+          if (err) {
+            console.error('❌ LDAP-Gruppenmodifikation fehlgeschlagen:', err.message);
+            reject(new Error(`Gruppenmitgliedschaft-Entfernung fehlgeschlagen: ${err.message}`));
+          } else {
+            console.log('✅ LDAP-Gruppenmodifikation erfolgreich');
+            resolve();
+          }
+        });
+      });
+
+    } finally {
+      // ===== LDAP-CLIENT CLEANUP =====
+      
+      client.destroy();
+      console.log('🧹 LDAP-Client ordnungsgemäß bereinigt');
+    }
+
+    // ===== SICHERHEITS-AUDIT-LOGGING =====
+    
+    logSecurityEvent(
+      adminUser, 
+      'REMOVE_USER_FROM_GROUP', 
+      `Benutzer ${username} erfolgreich aus LDAP-Gruppe ${groupDN} entfernt`
+    );
+
+    // ===== ERFOLGSANTWORT =====
+    
+    console.log(`✅ Gruppen-Entfernung erfolgreich: ${username} ← ${groupDN}`);
+
+    res.json({
+      success: true,
+      message: `Benutzer ${username} erfolgreich aus Gruppe entfernt`,
+      operation: {
+        user: username,
+        group: groupDN,
+        action: 'remove',
+        performedBy: adminUser
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    // ===== UMFASSENDE FEHLERBEHANDLUNG =====
+    
+    console.error('❌ Fehler beim Entfernen aus Gruppe:', error);
+    
+    res.status(500).json({ 
+      error: 'Fehler beim Entfernen aus Gruppe',
+      details: error.message,
+      troubleshooting: {
+        checkLdapConfig: 'Prüfe LDAP-Admin-Anmeldedaten',
+        checkMembership: 'Prüfe ob Benutzer tatsächlich Mitglied der Gruppe ist',
+        checkGroupExists: 'Prüfe ob Zielgruppe existiert',
+        checkPermissions: 'Prüfe Admin-Berechtigungen für Gruppenmodifikation'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Benutzer-Account aktivieren/deaktivieren - Account-Status-Management
+ * 
+ * Diese kritische Admin-Funktion ermöglicht das Aktivieren oder Deaktivieren
+ * von Benutzer-Accounts im Active Directory durch Modifikation des
+ * userAccountControl-Attributs.
+ * 
+ * Funktionalitäten:
+ * - Account-Aktivierung (userAccountControl = 512)
+ * - Account-Deaktivierung (userAccountControl = 514) 
+ * - Validierung der Action-Parameter
+ * - Sichere LDAP-Admin-Operationen
+ * - Umfassende Audit-Protokollierung
+ * 
+ * Active Directory userAccountControl-Werte:
+ * - 512 (0x200): Normaler Account (aktiviert)
+ * - 514 (0x202): Account deaktiviert (512 + 2)
+ * - Diese Werte steuern die Anmeldefähigkeit des Benutzers
+ * 
+ * Sicherheitsaspekte:
+ * - Kritische Funktion für Account-Sicherheit
+ * - Vollständige Protokollierung aller Status-Änderungen
+ * - Admin-Authentifizierung erforderlich
+ * 
+ * Anwendungsfälle:
+ * - Temporäre Account-Sperrung bei Sicherheitsvorfällen
+ * - Account-Reaktivierung nach Problemlösung
+ * - Mitarbeiter-Austritte und -Eintritte
+ * 
+ * @param {Object} req - Express Request mit { username, action: 'enable'|'disable' }
+ * @param {Object} res - Express Response mit Erfolg/Fehler-Status
+ */
+export const toggleUserAccount = async (req, res) => {
+  try {
+    console.log('🔐 Admin-Account-Management: Account-Status ändern...');
+    
+    // ===== ADMIN-BENUTZER IDENTIFIZIEREN =====
+    
+    const adminUser = req.user?.username || 'unknown';
+    
+    // ===== EINGABE-VALIDIERUNG =====
+    
+    const { username, action } = req.body; // action: 'enable' | 'disable'
+
+    if (!username || !['enable', 'disable'].includes(action)) {
+      console.warn(`⚠️ Ungültige Eingabe von Admin ${adminUser}: username=${username}, action=${action}`);
+      return res.status(400).json({ 
+        error: 'Username und gültige Action (enable/disable) sind erforderlich',
+        validActions: ['enable', 'disable'],
+        received: { username: Boolean(username), action }
+      });
+    }
+
+    console.log(`📝 ${action === 'enable' ? 'Aktiviere' : 'Deaktiviere'} Account ${username} (Admin: ${adminUser})`);
+
+    // ===== LDAP-CLIENT ERSTELLEN =====
+    
+    const client = createAdminLdapClient();
+
+    try {
+      // ===== ADMIN-AUTHENTIFIZIERUNG =====
+      
+      await new Promise((resolve, reject) => {
+        client.bind(process.env.LDAP_ADMIN_DN, process.env.LDAP_ADMIN_PASSWORD, (err) => {
+          if (err) {
+            console.error('❌ Admin-LDAP-Authentifizierung fehlgeschlagen:', err.message);
+            reject(new Error(`LDAP Admin-Anmeldung fehlgeschlagen: ${err.message}`));
+          } else {
+            console.log('✅ Admin-LDAP-Authentifizierung erfolgreich');
+            resolve();
+          }
+        });
+      });
+
+      // ===== ACCOUNT-STATUS MODIFIZIEREN =====
+      
+      // Konstruiere vollständigen Benutzer-DN
+      const userDN = `CN=${username},OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de`;
+      
+      // Active Directory userAccountControl-Werte:
+      // 512 (0x200) = Normaler aktivierter Account
+      // 514 (0x202) = Deaktivierter Account (512 + 2)
+      const userAccountControlValue = action === 'enable' ? '512' : '514';
+      
+      // LDAP-Modifikations-Operation: userAccountControl ersetzen
+      const modification = {
+        operation: 'replace',                // Replace-Operation für Account-Status
+        modification: {
+          userAccountControl: userAccountControlValue  // Neuer Account-Status-Wert
+        }
+      };
+
+      console.log(`🔧 Führe LDAP-Modifikation durch: Setze userAccountControl=${userAccountControlValue} für ${userDN}`);
+
+      // Promise-Wrapper für LDAP-Modify-Operation
+      await new Promise((resolve, reject) => {
+        client.modify(userDN, modification, (err) => {
+          if (err) {
+            console.error('❌ LDAP-Account-Modifikation fehlgeschlagen:', err.message);
+            reject(new Error(`Account-Status-Änderung fehlgeschlagen: ${err.message}`));
+          } else {
+            console.log('✅ LDAP-Account-Modifikation erfolgreich');
+            resolve();
+          }
+        });
+      });
+
+    } finally {
+      // ===== LDAP-CLIENT CLEANUP =====
+      
+      client.destroy();
+      console.log('🧹 LDAP-Client ordnungsgemäß bereinigt');
+    }
+
+    // ===== SICHERHEITS-AUDIT-LOGGING =====
+    
+    logSecurityEvent(
+      adminUser, 
+      'TOGGLE_USER_ACCOUNT', 
+      `Benutzer-Account ${username} ${action === 'enable' ? 'aktiviert' : 'deaktiviert'} (userAccountControl: ${action === 'enable' ? '512' : '514'})`
+    );
+
+    // ===== ERFOLGSANTWORT =====
+    
+    const statusText = action === 'enable' ? 'aktiviert' : 'deaktiviert';
+    console.log(`✅ Account-Status-Änderung erfolgreich: ${username} ${statusText}`);
+
+    res.json({
+      success: true,
+      message: `Benutzer ${username} erfolgreich ${statusText}`,
+      operation: {
+        user: username,
+        action: action,
+        newStatus: statusText,
+        userAccountControl: action === 'enable' ? 512 : 514,
+        performedBy: adminUser
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    // ===== UMFASSENDE FEHLERBEHANDLUNG =====
+    
+    console.error('❌ Fehler beim Aktivieren/Deaktivieren des Accounts:', error);
+    
+    res.status(500).json({ 
+      error: 'Fehler beim Aktivieren/Deaktivieren des Accounts',
+      details: error.message,
+      troubleshooting: {
+        checkLdapConfig: 'Prüfe LDAP-Admin-Anmeldedaten',
+        checkUserExists: 'Prüfe ob Benutzer-Account existiert',
+        checkUserDN: 'Prüfe korrekte DN-Struktur',
+        checkPermissions: 'Prüfe Admin-Berechtigungen für Account-Modifikation'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Passwort-Reset für Benutzer
+ */
+export const resetUserPassword = async (req, res) => {
+  try {
+    const adminUser = req.user?.username || 'unknown';
+    const { username, newPassword } = req.body;
+
+    if (!username || !newPassword) {
+      return res.status(400).json({ 
+        error: 'Username und neues Passwort erforderlich' 
+      });
+    }
+
+    // Passwort-Stärke prüfen
+    if (newPassword.length < 8) {
+      return res.status(400).json({ 
+        error: 'Passwort muss mindestens 8 Zeichen lang sein' 
+      });
+    }
+
+    const client = createAdminLdapClient();
+
+    // Admin-Bind
+    await new Promise((resolve, reject) => {
+      client.bind(process.env.LDAP_ADMIN_DN, process.env.LDAP_ADMIN_PASSWORD, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const userDN = `CN=${username},OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de`;
+    
+    // Passwort setzen
+    const modification = {
+      operation: 'replace',
+      modification: {
+        unicodePwd: Buffer.from(`"${newPassword}"`, 'utf16le').toString()
+      }
+    };
+
+    await new Promise((resolve, reject) => {
+      client.modify(userDN, modification, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    client.destroy();
+
+    logSecurityEvent(adminUser, 'RESET_USER_PASSWORD', 
+      `Passwort für Benutzer ${username} zurückgesetzt`);
+
+    res.json({
+      success: true,
+      message: `Passwort für ${username} erfolgreich zurückgesetzt`,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Fehler beim Passwort-Reset:', error);
+    res.status(500).json({ 
+      error: 'Fehler beim Passwort-Reset',
+      details: error.message
+    });
+  }
+};
+
+/**
+ * System-Konfiguration abrufen
+ */
+export const getSystemConfig = async (req, res) => {
+  try {
+    const adminUser = req.user?.username || 'unknown';
+
+    const config = {
+      admin: ADMIN_CONFIG,
+      ldap: {
+        configured: Boolean(process.env.LDAP_URL),
+        url: process.env.LDAP_URL ? process.env.LDAP_URL.replace(/\/\/.*@/, '//***@') : null,
+        baseDN: process.env.LDAP_BASE_DN || null
+      },
+      opnsense: {
+        configured: Boolean(process.env.OPNSENSE_API_KEY && process.env.OPNSENSE_API_SECRET),
+        host: process.env.OPNSENSE_HOST || 'vpn.hnee.de'
+      },
+      environment: process.env.NODE_ENV || 'development',
+      timestamp: new Date().toISOString()
+    };
+
+    logSecurityEvent(adminUser, 'VIEW_SYSTEM_CONFIG', 'System-Konfiguration abgerufen');
+
+    res.json(config);
+
+  } catch (error) {
+    console.error('Fehler beim Abrufen der System-Konfiguration:', error);
+    res.status(500).json({ 
+      error: 'Fehler beim Abrufen der System-Konfiguration' 
+    });
+  }
+};
+
+/**
+ * System-Konfiguration aktualisieren
+ */
+export const updateSystemConfig = async (req, res) => {
+  try {
+    const adminUser = req.user?.username || 'unknown';
+    const { maxUserLimit, allowUserCreation, allowUserDeletion, requireAdminApproval } = req.body;
+
+    // Validierung
+    if (maxUserLimit && (maxUserLimit < 100 || maxUserLimit > 10000)) {
+      return res.status(400).json({ 
+        error: 'maxUserLimit muss zwischen 100 und 10000 liegen' 
+      });
+    }
+
+    // Konfiguration aktualisieren (in echter Implementierung würde dies in DB/Env gespeichert)
+    if (maxUserLimit !== undefined) ADMIN_CONFIG.maxUserLimit = maxUserLimit;
+    if (allowUserCreation !== undefined) ADMIN_CONFIG.allowUserCreation = allowUserCreation;
+    if (allowUserDeletion !== undefined) ADMIN_CONFIG.allowUserDeletion = allowUserDeletion;
+    if (requireAdminApproval !== undefined) ADMIN_CONFIG.requireAdminApproval = requireAdminApproval;
+
+    logSecurityEvent(adminUser, 'UPDATE_SYSTEM_CONFIG', 
+      `System-Konfiguration aktualisiert: ${JSON.stringify(req.body)}`);
+
+    res.json({
+      success: true,
+      message: 'System-Konfiguration erfolgreich aktualisiert',
+      config: ADMIN_CONFIG,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Fehler beim Aktualisieren der System-Konfiguration:', error);
+    res.status(500).json({ 
+      error: 'Fehler beim Aktualisieren der System-Konfiguration' 
+    });
+  }
+};
+
+/**
+ * Audit-Logs abrufen
+ */
+export const getAuditLogs = async (req, res) => {
+  try {
+    const adminUser = req.user?.username || 'unknown';
+    const { limit = 100, offset = 0, startDate, endDate, action, user: filterUser } = req.query;
+
+    // In echter Implementierung würde dies aus einer Log-DB kommen
+    // Hier simulieren wir mit einer einfachen Antwort
+    const logs = [
+      {
+        id: 1,
+        timestamp: new Date().toISOString(),
+        user: adminUser,
+        action: 'VIEW_AUDIT_LOGS',
+        details: 'Audit-Logs abgerufen',
+        ip: req.ip || 'unknown',
+        userAgent: req.get('User-Agent') || 'unknown'
+      }
+    ];
+
+    logSecurityEvent(adminUser, 'VIEW_AUDIT_LOGS', 
+      `Audit-Logs abgerufen (Limit: ${limit}, Offset: ${offset})`);
+
+    res.json({
+      logs,
+      pagination: {
+        total: logs.length,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        hasMore: false
+      },
+      filters: {
+        startDate,
+        endDate,
+        action,
+        user: filterUser
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Fehler beim Abrufen der Audit-Logs:', error);
+    res.status(500).json({ 
+      error: 'Fehler beim Abrufen der Audit-Logs' 
+    });
+  }
+};
+
+/**
+ * Benutzer-Anfragen verwalten (Genehmigungen)
+ */
+export const manageUserRequests = async (req, res) => {
+  try {
+    const adminUser = req.user?.username || 'unknown';
+    const { requestId, action, reason } = req.body; // action: 'approve' | 'reject'
+
+    if (!requestId || !['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ 
+        error: 'Request ID und gültige Action (approve/reject) erforderlich' 
+      });
+    }
+
+    // In echter Implementierung würde dies aus einer DB kommen
+    const mockRequest = {
+      id: requestId,
+      type: 'vpn_access',
+      user: 'muster.student',
+      status: 'pending',
+      requestedAt: new Date().toISOString()
+    };
+
+    logSecurityEvent(adminUser, 'MANAGE_USER_REQUEST', 
+      `Benutzer-Anfrage ${requestId} ${action === 'approve' ? 'genehmigt' : 'abgelehnt'}: ${reason || 'Kein Grund angegeben'}`);
+
+    res.json({
+      success: true,
+      message: `Anfrage ${requestId} erfolgreich ${action === 'approve' ? 'genehmigt' : 'abgelehnt'}`,
+      request: {
+        ...mockRequest,
+        status: action === 'approve' ? 'approved' : 'rejected',
+        processedBy: adminUser,
+        processedAt: new Date().toISOString(),
+        reason
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Fehler beim Verwalten der Benutzer-Anfrage:', error);
+    res.status(500).json({ 
+      error: 'Fehler beim Verwalten der Benutzer-Anfrage' 
+    });
+  }
+};
+
+/**
+ * LDAP-Batch-Operationen für Gruppenmanagement
+ */
+export const batchGroupOperations = async (req, res) => {
+  try {
+    const adminUser = req.user?.username || 'unknown';
+    const { operations } = req.body; // Array von { username, groupDN, action: 'add'|'remove' }
+
+    if (!Array.isArray(operations) || operations.length === 0) {
+      return res.status(400).json({ 
+        error: 'Operations-Array ist erforderlich' 
+      });
+    }
+
+    const client = createAdminLdapClient();
+    const results = [];
+
+    // Admin-Bind
+    await new Promise((resolve, reject) => {
+      client.bind(process.env.LDAP_ADMIN_DN, process.env.LDAP_ADMIN_PASSWORD, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // Batch-Operationen ausführen
+    for (const op of operations) {
+      try {
+        const { username, groupDN, action } = op;
+        
+        const modification = {
+          operation: action === 'add' ? 'add' : 'delete',
+          modification: {
+            member: `CN=${username},OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de`
+          }
+        };
+
+        await new Promise((resolve, reject) => {
+          client.modify(groupDN, modification, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+
+        results.push({
+          username,
+          groupDN,
+          action,
+          success: true
+        });
+
+      } catch (error) {
+        results.push({
+          username: op.username,
+          groupDN: op.groupDN,
+          action: op.action,
+          success: false,
+          error: error.message
+        });
+      }
+    }
+
+    client.destroy();
+
+    const successCount = results.filter(r => r.success).length;
+    const errorCount = results.filter(r => !r.success).length;
+
+    logSecurityEvent(adminUser, 'BATCH_GROUP_OPERATIONS', 
+      `Batch-Gruppenoperationen: ${successCount} erfolgreich, ${errorCount} fehlgeschlagen`);
+
+    res.json({
+      success: errorCount === 0,
+      message: `Batch-Operation abgeschlossen: ${successCount} erfolgreich, ${errorCount} fehlgeschlagen`,
+      results,
+      summary: {
+        total: operations.length,
+        successful: successCount,
+        failed: errorCount
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Fehler bei Batch-Gruppenoperationen:', error);
+    res.status(500).json({ 
+      error: 'Fehler bei Batch-Gruppenoperationen',
+      details: error.message
     });
   }
 };

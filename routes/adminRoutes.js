@@ -1,62 +1,114 @@
 /**
- * Admin Routes - Service Portal API-Endpunkte für HNEE
+ * Admin Routes - Getrennte Monitoring und Administration
  * 
- * Diese Datei definiert alle Service Portal Admin-Routen für das
- * HNEE IT-Service Zentrum. Fokus auf Service-Management statt
- * System-Administration.
+ * Diese Datei definiert sowohl Monitoring- als auch Admin-Routen.
+ * Monitoring: Reports-Dashboard Daten
+ * Administration: Benutzer- und Systemverwaltung
  * 
- * Endpunkte:
+ * Monitoring Endpunkte:
  * - GET /api/admin/stats - Portal-Dashboard-Statistiken
- * - GET /api/admin/users - Detaillierte Benutzerinformationen aus LDAP
- * - GET /api/admin/wireguard/service - WireGuard Service-Status
- * - POST /api/admin/ldap/sync - LDAP-Synchronisation
+ * - GET /api/admin/health - System Health Check
+ * - GET /api/admin/wireguard/status - WireGuard Service-Status
+ * - GET /api/admin/wireguard/config - WireGuard Konfiguration
+ * - GET /api/admin/circuit-breaker/status - Circuit Breaker Status
+ * - POST /api/admin/circuit-breaker/reset - Circuit Breaker Reset
  * 
- * Sicherheit:
- * - Alle Routen erfordern gültige JWT-Authentifizierung
- * - Admin-Rollenbasierte Zugriffskontrolle
- * - Rate Limiting für kritische Operationen
- * - Input-Validierung und Sanitization
+ * Administration Endpunkte:
+ * - POST /api/admin/users/:username/groups/:groupDN/add - User zu Gruppe
+ * - POST /api/admin/users/:username/groups/:groupDN/remove - User aus Gruppe  
+ * - POST /api/admin/users/:username/toggle - Konto aktivieren/deaktivieren
+ * - POST /api/admin/users/:username/reset-password - Passwort zurücksetzen
+ * - GET /api/admin/system/config - Systemkonfiguration
+ * - POST /api/admin/system/config - Systemkonfiguration ändern
+ * - GET /api/admin/audit-logs - Audit-Logs
+ * - POST /api/admin/batch/group-operations - Batch-Gruppenoperationen
  * 
  * @author Paul Buchwald - ITSZ Team
- * @version 2.0.0 - Service Portal Focus
+ * @version 2.0.0 - Monitoring/Administration Trennung
  */
 
 import express from 'express';
-import { 
-  getPortalStats,
-  syncLDAP,
-  getUserDetails,
-  getWireGuardServiceStatus,
-} from '../controllers/adminController.js';
 import { verifyToken } from '../middleware/authMiddleware.js';
-import { generalLimiter } from '../middleware/securityMiddleware.js';
+import { requireAdmin } from '../middleware/securityMiddleware.js';
+
+// Monitoring Controller für alle Überwachungsfunktionen
+import {
+  getPortalStats,
+  getWireGuardServiceStatus,
+  getHealthStatus,
+  getCircuitBreakerStatus,
+  resetCircuitBreaker,
+  getWireGuardConfig
+} from '../controllers/monitoringController.js';
+
+// Admin Controller für reine Administrations-Funktionen
+import {
+  addUserToGroup,
+  removeUserFromGroup,
+  toggleUserAccount,
+  resetUserPassword,
+  getSystemConfig,
+  updateSystemConfig,
+  getAuditLogs,
+  batchGroupOperations
+} from '../controllers/adminController.js';
 
 // Router-Instanz erstellen
 export const router = express.Router();
 
 /**
- * Portal Dashboard
+ * Portal Dashboard & Monitoring
  */
 
-// Portal-Statistiken abrufen - GET /api/admin/stats
+// Health Check - Öffentlich für externe Monitoring-Systeme
+router.get('/health', getHealthStatus);
+
+// Portal-Statistiken für Reports Dashboard
 router.get('/stats', verifyToken, getPortalStats);
 
-// Detaillierte Benutzerinformationen - GET /api/admin/users
-router.get('/users', verifyToken, getUserDetails);
+// WireGuard Service Status
+router.get('/wireguard/status', verifyToken, getWireGuardServiceStatus);
+
+// WireGuard Konfiguration für Monitoring
+router.get('/wireguard/config', verifyToken, getWireGuardConfig);
+
+// Circuit Breaker Status
+router.get('/circuit-breaker/status', verifyToken, getCircuitBreakerStatus);
+
+// Circuit Breaker manuell zurücksetzen (Admin-only)
+router.post('/circuit-breaker/reset', verifyToken, requireAdmin, resetCircuitBreaker);
 
 /**
- * VPN Management
+ * Benutzer-Administration (LDAP)
  */
 
-// WireGuard Service-Status - GET /api/admin/wireguard/service
-router.get('/wireguard/service', verifyToken, getWireGuardServiceStatus);
+// Benutzer zu Gruppe hinzufügen
+router.post('/users/:username/groups/:groupDN/add', verifyToken, requireAdmin, addUserToGroup);
+
+// Benutzer aus Gruppe entfernen
+router.post('/users/:username/groups/:groupDN/remove', verifyToken, requireAdmin, removeUserFromGroup);
+
+// Benutzerkonto aktivieren/deaktivieren
+router.post('/users/:username/toggle', verifyToken, requireAdmin, toggleUserAccount);
+
+// Benutzer-Passwort zurücksetzen
+router.post('/users/:username/reset-password', verifyToken, requireAdmin, resetUserPassword);
 
 /**
- * LDAP Integration
+ * System-Administration
  */
 
-// LDAP-Synchronisation - POST /api/admin/ldap/sync
-router.post('/ldap/sync', verifyToken, generalLimiter, syncLDAP);
+// Systemkonfiguration abrufen
+router.get('/system/config', verifyToken, requireAdmin, getSystemConfig);
+
+// Systemkonfiguration aktualisieren
+router.post('/system/config', verifyToken, requireAdmin, updateSystemConfig);
+
+// Audit-Logs abrufen
+router.get('/audit-logs', verifyToken, requireAdmin, getAuditLogs);
+
+// Batch-Gruppenoperationen
+router.post('/batch/group-operations', verifyToken, requireAdmin, batchGroupOperations);
 
 /**
  * Router exportieren

@@ -135,3 +135,30 @@ export const validatePayloadSize = (req, res, next) => {
   
   next();
 };
+
+// Admin role validation middleware
+export const requireAdmin = (req, res, next) => {
+  // Check if user object exists (should be set by verifyToken middleware)
+  if (!req.user) {
+    logSecurityEvent('ADMIN_ACCESS_ATTEMPT_NO_USER', req, { 
+      severity: 'high' 
+    });
+    return res.status(401).json({
+      error: 'Authentifizierung erforderlich'
+    });
+  }
+
+  // Check if user has admin role
+  if (!req.user.isAdmin && !req.user.roles?.includes('admin')) {
+    logSecurityEvent('ADMIN_ACCESS_DENIED', req, { 
+      username: req.user.username,
+      roles: req.user.roles,
+      severity: 'medium' 
+    });
+    return res.status(403).json({
+      error: 'Administratorrechte erforderlich'
+    });
+  }
+
+  next();
+};
