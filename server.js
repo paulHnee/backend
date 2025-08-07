@@ -103,6 +103,7 @@ import {
 import { router as authRoutes } from './routes/authRoutes.js';
 import { router as vpnRoutes } from './routes/vpnRoutes.js';
 import { router as adminRoutes } from './routes/adminRoutes.js';
+import { router as monitoringRoutes } from './routes/monitoringRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import integrationRoutes from './routes/integrationRoutes.js';
 import { corsOptions } from './config/cors.js';
@@ -396,6 +397,7 @@ app.get('/api/browser-reset', (req, res) => {
 app.use('/api', authRoutes);  // Auth-Routen unter /api mounten
 app.use('/api/vpn', vpnRoutes); // VPN-Routen unter /api/vpn mounten
 app.use('/api/admin', adminRoutes); // System-Routen unter /api/admin mounten
+app.use('/api/monitoring', monitoringRoutes); // Monitoring-Routen unter /api/monitoring mounten
 app.use('/api/user', userRoutes); // User-Routen unter /api/user mounten
 app.use('/api/integration', integrationRoutes); // Integration-Routen unter /api/integration mounten
 

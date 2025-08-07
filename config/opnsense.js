@@ -43,8 +43,12 @@ class OPNsenseAPI {
       timeout: this.timeout
     };
     
+    // Warnung ausgeben aber nicht werfen wenn API-Anmeldedaten fehlen
     if (!this.apiKey || !this.apiSecret) {
-      throw new Error('OPNsense API-Anmeldedaten nicht konfiguriert (OPNSENSE_API_KEY/OPNSENSE_API_SECRET fehlen)');
+      console.warn('⚠️ OPNsense API-Anmeldedaten nicht konfiguriert (OPNSENSE_API_KEY/OPNSENSE_API_SECRET fehlen)');
+      this.configured = false;
+    } else {
+      this.configured = true;
     }
   }
 
@@ -52,6 +56,9 @@ class OPNsenseAPI {
    * HTTP-Request an OPNsense API senden (nur Hostname, kein IP-Fallback)
    */
   async request(endpoint, method = 'GET', data = null) {
+    if (!this.configured) {
+      throw new Error('OPNsense API nicht konfiguriert - API-Anmeldedaten fehlen');
+    }
     // Verwende nur den funktionierenden Hostname
     return this.makeRequest(this.host, endpoint, method, data);
   }
@@ -582,6 +589,18 @@ export const getOPNsenseAPI = () => {
     opnsenseInstance = new OPNsenseAPI();
   }
   return opnsenseInstance;
+};
+
+/**
+ * Prüfe OPNsense-Konfiguration ohne Exception
+ */
+export const isOPNsenseConfigured = () => {
+  try {
+    const api = getOPNsenseAPI();
+    return api.configured;
+  } catch (error) {
+    return false;
+  }
 };
 
 /**

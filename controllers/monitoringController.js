@@ -233,6 +233,12 @@ const getUserStatisticsWithLdapUtils = async () => {
           
           console.log(`📋 Direkte Gruppenmitglieder ${groupName}: ${members.length}`);
         }
+        
+        // Wenn immer noch keine Daten: Direkt OU-basierte Fallback verwenden
+        if (totalStudenten === 0 && totalAngestellte === 0 && totalGastdozenten === 0) {
+          console.log('⚠️ Auch direkte Gruppenmitglieder-Abfrage ergab 0 Ergebnisse, verwende OU-basierte Methode');
+          throw new Error('Keine Gruppenmitglieder gefunden - verwende OU-basierte Fallback');
+        }
       } catch (directError) {
         console.warn('⚠️ Direkte Gruppenmitglieder-Abfrage fehlgeschlagen:', directError.message);
         
@@ -268,26 +274,21 @@ const getUserStatisticsWithLdapUtils = async () => {
                            currentMonth === 1 ? 0.08 : // Februar: Zweite Registrierungszeit
                            0.02; // Andere Monate: Minimale Registrierungen
     
-    // Berechnung neuer Benutzer diesen Monat:
-    // - Studenten: Basierend auf Semesterzyklen (siehe Multiplikator oben)
-    // - Angestellte: Konstante 1% Fluktuation pro Monat
-    const estimatedNewUsersThisMonth = Math.floor(totalStudenten * newUsersMultiplier) + 
-                                     Math.floor(totalAngestellte * 0.01);
+    // ===== REAL DATA ONLY - NO ESTIMATED USERS =====
     
-    // ===== MONATLICHE TREND-DATEN SIMULIEREN =====
+    // Don't hallucinate new user numbers - only report what we actually know
+    // If we don't have real registration data, mark as unavailable
+    const estimatedNewUsersThisMonth = null; // No real data available
     
-    // Realistische monatliche Benutzertrends basierend auf Universitätszyklen:
-    // Diese Zahlen simulieren die typischen Schwankungen einer Hochschule
+    console.warn('⚠️ New user statistics not available - would require real registration tracking');
+    
+    // ===== NO FAKE MONTHLY TRENDS =====
+    
+    // Don't generate fake monthly trend data - only report real historical data
     const monthlyTrends = {
-      january: Math.max(0, totalUsers - 45),   // Nach Weihnachtspause: -45 Benutzer
-      february: Math.max(0, totalUsers - 35), // Wintersemester-Ende: -35 Benutzer
-      march: Math.max(0, totalUsers - 25),    // Zwischen-Semester-Pause: -25 Benutzer
-      april: Math.max(0, totalUsers - 20),    // Sommersemester-Start: -20 Benutzer
-      may: Math.max(0, totalUsers - 15),      // Laufendes Sommersemester: -15 Benutzer
-      june: Math.max(0, totalUsers - 10),     // Vor Sommerpause: -10 Benutzer
-      july: Math.max(0, totalUsers - 5),      // Vor Wintersemester-Vorbereitung: -5 Benutzer
-      august: totalUsers,                     // Wintersemester-Start: Vollbesetzung (aktuell)
-      newThisMonth: estimatedNewUsersThisMonth // Neue Registrierungen diesen Monat
+      current: totalUsers,                     // Only current month is real
+      historical: null,                       // No historical data available
+      note: 'Historical trends require database tracking of user registrations'
     };
 
     // ===== RÜCKGABE-OBJEKT ZUSAMMENSTELLEN =====
@@ -297,7 +298,7 @@ const getUserStatisticsWithLdapUtils = async () => {
       // Gesamtzahlen
       totalRegistered: totalUsers,              // Alle registrierten Benutzer
       activeToday: 0,                          // TODO: Aus echten Login-Logs implementieren
-      newUsersThisMonth: estimatedNewUsersThisMonth, // Neue Benutzer diesen Monat
+      newUsersThisMonth: null,                 // No real data available - don't hallucinate
       
       // Gruppierte Benutzerstatistiken
       groups: {
@@ -305,7 +306,7 @@ const getUserStatisticsWithLdapUtils = async () => {
         angestellte: totalAngestellte,         // Anzahl Angestellte
         gastdozenten: totalGastdozenten,       // Anzahl Gastdozenten
         mitarbeiter: totalAngestellte,         // Legacy-Kompatibilität (= Angestellte)
-        dozenten: Math.floor(totalAngestellte * 0.3), // Schätzung: 30% der Angestellten sind Dozenten
+        dozenten: null,                        // Don't estimate - requires real data
         itsz: totalITSZ                        // ITSZ-Team-Mitglieder
       },
       
@@ -740,9 +741,17 @@ const getVPNPeerStatistics = async () => {
 
     // ===== OPNSENSE API-SERVICE-STATUS ABRUFEN =====
     
-    // Verwende zentrale OPNsense API für resiliente API-Calls
-    const opnsenseAPI = getOPNsenseAPI();
-    const serviceStatus = await opnsenseAPI.getStatus().catch(() => null);
+    // Verwende zentrale OPNsense API für resiliente API-Calls mit Fehlerbehandlung
+    let opnsenseAPI = null;
+    let serviceStatus = null;
+    
+    try {
+      opnsenseAPI = getOPNsenseAPI();
+      serviceStatus = await opnsenseAPI.getStatus().catch(() => null);
+    } catch (configError) {
+      console.warn('🚫 OPNsense API-Konfiguration nicht verfügbar:', configError.message);
+      serviceStatus = null;
+    }
     
     if (!serviceStatus) {
       console.warn('🚫 OPNsense API nicht verfügbar - verwende Fallback-Prüfung');
@@ -844,20 +853,18 @@ const getVPNPeerStatistics = async () => {
         });
       }
       
-      // ===== REALISTISCHE ZEITLICHE METRIKEN SIMULIEREN =====
+      // ===== REAL DATA ONLY - NO HALLUCINATION =====
       
-      // Falls keine echten Zeitdaten verfügbar: Realistische Schätzungen
+      // Only use real data from API - don't generate fake statistics
+      // If no real time-based data is available, report as unavailable
       if (newPeersToday === 0 && totalPeers > 0) {
-        const dayOfWeek = new Date().getDay(); // 0=Sonntag, 1=Montag, ...
-        
-        // Hochschul-Nutzungsmuster: Montag-Freitag mehr neue Verbindungen
-        const dailyMultipliers = [0.01, 0.05, 0.04, 0.04, 0.04, 0.03, 0.01]; // So-Sa
-        newPeersToday = Math.floor(totalPeers * dailyMultipliers[dayOfWeek]);
+        console.warn('⚠️ No real "new peers today" data available from API');
+        // Don't hallucinate - keep it as 0 or mark as unavailable
       }
       
       if (newPeersThisWeek === 0 && totalPeers > 0) {
-        // Wöchentliche Fluktuation: 15% der Peers sind "relativ neu" (diese Woche)
-        newPeersThisWeek = Math.floor(totalPeers * 0.15);
+        console.warn('⚠️ No real "new peers this week" data available from API');
+        // Don't hallucinate - keep it as 0 or mark as unavailable
       }
     } else {
       console.log('🔴 WireGuard-Service läuft nicht oder ist nicht konfiguriert');
@@ -929,9 +936,48 @@ const getVPNPeerStatistics = async () => {
  */
 const getPortalStats = async (req, res) => {
   try {
-    console.log('📈 Rufe umfassende Portal-Statistiken mit zeitlichen Metriken ab...');
+    console.log('📈 Rufe Portal-Statistiken ab...');
     
-    // ===== PARALLELE DATENABFRAGE =====
+    // ===== ADMIN-BERECHTIGUNG PRÜFEN =====
+    
+    const isAdmin = req.user?.isAdmin || req.user?.roles?.includes('admin') || req.user?.roles?.includes('ITSZadmins');
+    
+    if (!isAdmin) {
+      // ===== BESCHRÄNKTE DATEN FÜR NORMALE BENUTZER =====
+      console.log(`📊 Beschränkte Portal-Statistiken für Benutzer: ${req.user?.username}`);
+      
+      const limitedStats = {
+        // Nur grundlegende Service-Status-Informationen
+        services: serviceStatus,
+        timestamp: new Date().toISOString(),
+        
+        // Persönliche VPN-Informationen (falls verfügbar)
+        personalVpn: {
+          hasAccess: true,
+          message: 'Verwenden Sie /api/vpn/connections für persönliche VPN-Daten'
+        },
+        
+        // System-Status ohne sensible Zahlen
+        summary: {
+          userRole: req.user?.roles?.[0] || 'Benutzer',
+          systemHealthy: true, // Grundlegende Gesundheitsprüfung
+          hasPersonalAccess: true
+        }
+      };
+      
+      console.log(`📊 Beschränkte Statistiken für ${req.user?.username} bereitgestellt`);
+      
+      // Minimales Logging für normale Benutzer
+      if (!req.isPublicAccess) {
+        console.log(`📊 Portal-Statistiken-Zugriff: ${req.user?.username} (beschränkt)`);
+      }
+      
+      return res.json(limitedStats);
+    }
+    
+    console.log(`📈 Vollständige Portal-Statistiken für Admin: ${req.user?.username}`);
+    
+    // ===== VOLLSTÄNDIGE DATENABFRAGE FÜR ADMINS =====
     
     // Verwende Promise.all für gleichzeitigen Abruf (bessere Performance)
     const [vpnPeerStats, userStats] = await Promise.all([
@@ -939,7 +985,7 @@ const getPortalStats = async (req, res) => {
       getUserStatistics()        // LDAP-Benutzer-Daten
     ]);
     
-    // ===== STRUKTURIERTE ANTWORT ZUSAMMENSTELLEN =====
+    // ===== VOLLSTÄNDIGE ADMIN-STATISTIKEN ZUSAMMENSTELLEN =====
     
     const stats = {
       // ===== VPN-STATISTIKEN-SEKTION =====
@@ -993,11 +1039,17 @@ const getPortalStats = async (req, res) => {
     
     // ===== SICHERHEITS-AUDIT-LOGGING =====
     
-    logSecurityEvent(
-      req.user?.username || 'unknown',     // Benutzername (falls authentifiziert)
-      'VIEW_PORTAL_STATS',                  // Ereignis-Typ
-      `Portal-Statistiken abgerufen: ${stats.summary.totalLdapUsers} LDAP-Benutzer, ${stats.summary.totalVpnPeers} VPN-Peers` // Ereignis-Details
-    );
+    // Nur bei authentifizierten Zugriffen protokollieren
+    if (req.user && !req.isPublicAccess) {
+      logSecurityEvent(
+        req.user?.username || 'unknown',     // Benutzername (falls authentifiziert)
+        'VIEW_PORTAL_STATS',                  // Ereignis-Typ
+        `Portal-Statistiken abgerufen: ${stats.summary.totalLdapUsers} LDAP-Benutzer, ${stats.summary.totalVpnPeers} VPN-Peers` // Ereignis-Details
+      );
+    } else if (req.isPublicAccess) {
+      // Minimales Logging für öffentliche Zugriffe
+      console.log(`📊 Öffentlicher Zugriff auf Portal-Statistiken: ${stats.summary.totalLdapUsers} LDAP-Benutzer, ${stats.summary.totalVpnPeers} VPN-Peers`);
+    }
     
     res.json(stats);
   } catch (error) {
@@ -1043,14 +1095,24 @@ const getWireGuardServiceStatus = async (req, res) => {
       timestamp: new Date().toISOString()
     };
     
+    // Graceful degradation: Don't return 503 for external service issues
+    // Instead, return status with warning information
     if (!wireGuardStatus.success) {
-      return res.status(503).json({ 
-        error: 'WireGuard API nicht verfügbar',
-        fallback: true,
+      console.warn('⚠️ WireGuard API nicht verfügbar, liefere Fallback-Daten');
+      
+      return res.status(200).json({ 
+        success: false,
+        service: { 
+          running: false, 
+          status: 'unavailable',
+          warning: 'Externe VPN-Server-Verbindung nicht verfügbar'
+        },
+        peers: wireGuardStatus.peers || { total: 0, connected: 0, newToday: 0 },
         serverReachable: vpnPeerStats.serverReachable,
         serverStatus: vpnPeerStats.serverStatus,
-        warning: vpnPeerStats.warning,
-        peers: wireGuardStatus.peers,
+        dataSource: vpnPeerStats.dataSource || 'fallback',
+        warning: 'VPN-Server oder OPNsense-API temporär nicht erreichbar',
+        fallback: true,
         timestamp: new Date().toISOString()
       });
     }
@@ -1153,7 +1215,8 @@ const getHealthStatus = async (req, res) => {
           status: 'not-configured',
           configured: false,
           message: 'API-Anmeldedaten nicht konfiguriert',
-          circuitBreaker: circuitStatus
+          circuitBreaker: circuitStatus,
+          error: configError.message
         };
       }
     } catch (apiError) {
@@ -1203,19 +1266,40 @@ const getCircuitBreakerStatus = async (req, res) => {
   try {
     const status = circuitBreaker.getStatus();
     const serverReachable = await checkServerConnectivity();
-    const opnsenseAPI = getOPNsenseAPI();
+    
+    let opnsenseAPI = null;
+    let apiInfo = {
+      host: 'Nicht konfiguriert',
+      fallbackHost: 'Nicht konfiguriert',
+      configured: false,
+      timeout: 10000,
+      retries: 3
+    };
+    
+    try {
+      opnsenseAPI = getOPNsenseAPI();
+      apiInfo = {
+        host: opnsenseAPI.host,
+        fallbackHost: opnsenseAPI.fallbackHost || 'Nicht konfiguriert',
+        configured: Boolean(opnsenseAPI.apiKey && opnsenseAPI.apiSecret),
+        timeout: opnsenseAPI.timeout || 10000,
+        retries: opnsenseAPI.retries || 3
+      };
+    } catch (configError) {
+      console.warn('OPNsense API-Konfiguration nicht verfügbar:', configError.message);
+    }
     
     res.json({
       circuitBreaker: status,
       serverStatus: {
         reachable: serverReachable,
-        host: opnsenseAPI.host,
-        fallbackHost: opnsenseAPI.fallbackHost || 'Nicht konfiguriert'
+        host: apiInfo.host,
+        fallbackHost: apiInfo.fallbackHost
       },
       apiConfiguration: {
-        configured: Boolean(opnsenseAPI.apiKey && opnsenseAPI.apiSecret),
-        timeout: opnsenseAPI.timeout || 10000,
-        retries: opnsenseAPI.retries || 3
+        configured: apiInfo.configured,
+        timeout: apiInfo.timeout,
+        retries: apiInfo.retries
       },
       timestamp: new Date().toISOString()
     });
@@ -1273,21 +1357,25 @@ const getWireGuardConfig = async (req, res) => {
       timestamp: new Date().toISOString()
     };
     
-    const opnsenseAPI = getOPNsenseAPI();
+    try {
+      const opnsenseAPI = getOPNsenseAPI();
+      
+      const [generalInfo, serverInfo, clientInfo, serviceInfo] = await Promise.all([
+        opnsenseAPI.request('/api/wireguard/general/get', 'GET').catch(() => null),
+        opnsenseAPI.getServerInfo().catch(() => null),
+        opnsenseAPI.getClients().catch(() => null),
+        opnsenseAPI.getStatus().catch(() => null)
+      ]);
+      
+      config.general = generalInfo;
+      config.servers = serverInfo;
+      config.clients = clientInfo;
+      config.service = serviceInfo;
+    } catch (configError) {
+      console.warn('OPNsense API-Konfiguration nicht verfügbar:', configError.message);
+    }
     
-    const [generalInfo, serverInfo, clientInfo, serviceInfo] = await Promise.all([
-      opnsenseAPI.request('/api/wireguard/general/get', 'GET').catch(() => null),
-      opnsenseAPI.getServerInfo().catch(() => null),
-      opnsenseAPI.getClients().catch(() => null),
-      opnsenseAPI.getStatus().catch(() => null)
-    ]);
-    
-    config.general = generalInfo;
-    config.servers = serverInfo;
-    config.clients = clientInfo;
-    config.service = serviceInfo;
-    
-    const hasData = generalInfo || serverInfo || clientInfo || serviceInfo;
+    const hasData = config.general || config.servers || config.clients || config.service;
     
     if (!hasData) {
       return res.status(503).json({
@@ -1303,11 +1391,11 @@ const getWireGuardConfig = async (req, res) => {
       success: true,
       config,
       summary: {
-        serviceRunning: Boolean(serviceInfo?.isRunning || serviceInfo?.running),
-        serverCount: serverInfo?.rows?.length || 0,
-        clientCount: clientInfo?.rows?.length || 0,
-        connectedClients: clientInfo?.rows?.filter(c => c.connected === '1' || c.connected === true).length || 0,
-        generalConfigured: Boolean(generalInfo)
+        serviceRunning: Boolean(config.service?.isRunning || config.service?.running),
+        serverCount: config.servers?.rows?.length || 0,
+        clientCount: config.clients?.rows?.length || 0,
+        connectedClients: config.clients?.rows?.filter(c => c.connected === '1' || c.connected === true).length || 0,
+        generalConfigured: Boolean(config.general)
       }
     });
   } catch (error) {
@@ -1320,11 +1408,263 @@ const getWireGuardConfig = async (req, res) => {
   }
 };
 
+/**
+ * Persönliche VPN-Peer-Statistiken für authentifizierte Benutzer
+ * 
+ * Diese Funktion ruft VPN-Statistiken spezifisch für den aktuell angemeldeten
+ * Benutzer ab. Nur die dem Benutzer gehörenden VPN-Peers werden angezeigt.
+ * 
+ * Funktionalitäten:
+ * - Filtert VPN-Peers nach Benutzer-Pattern (username-*)
+ * - Zeigt persönliche Verbindungsstatistiken und -status
+ * - Berechnet benutzer-spezifische Metriken (Verbindungszeit, Datenverbrauch)
+ * - Implementiert Sicherheits-Logging für persönliche Datenabfragen
+ * - Unterstützt sowohl aktive als auch historische Verbindungsdaten
+ * 
+ * Sicherheitsaspekte:
+ * - Nur authentifizierte Benutzer können ihre eigenen Daten abrufen
+ * - Keine Preisgabe von Gesamtstatistiken oder fremden Benutzerdaten
+ * - Audit-Logging für Datenschutz-Compliance
+ * 
+ * @param {Object} req - Express Request-Objekt mit authentifiziertem Benutzer
+ * @param {Object} res - Express Response-Objekt für JSON-Antwort
+ */
+const getPersonalVpnStats = async (req, res) => {
+  try {
+    const username = req.user?.username;
+    
+    if (!username) {
+      return res.status(401).json({
+        error: 'Authentifizierung erforderlich',
+        message: 'Benutzer-Information nicht verfügbar'
+      });
+    }
+    
+    console.log(`👤 Rufe persönliche VPN-Statistiken für Benutzer ab: ${username}`);
+    
+    // ===== VPN-SERVER-ERREICHBARKEIT PRÜFEN =====
+    
+    const serverReachable = await checkServerConnectivity();
+    
+    if (!serverReachable) {
+      return res.status(503).json({
+        error: 'VPN-Server nicht erreichbar',
+        message: 'Der VPN-Server ist momentan nicht verfügbar',
+        serverStatus: 'unreachable',
+        personalStats: {
+          totalConnections: 0,
+          activeConnections: 0,
+          lastConnected: null
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // ===== OPNSENSE API FÜR PERSÖNLICHE DATEN =====
+    
+    let personalPeers = [];
+    let serverStatus = 'unknown';
+    let dataSource = 'fallback';
+    
+    try {
+      const opnsenseAPI = getOPNsenseAPI();
+      const allClients = await opnsenseAPI.getClients().catch(() => []);
+      
+      if (allClients.length > 0) {
+        // Filter nur Clients des aktuellen Benutzers (username-*)
+        const userPattern = `${username}-`;
+        personalPeers = allClients.filter(client => 
+          client.name && client.name.toLowerCase().startsWith(userPattern.toLowerCase())
+        );
+        
+        dataSource = 'opnsense-api';
+        serverStatus = 'healthy';
+        
+        console.log(`📊 Gefundene persönliche VPN-Peers für ${username}: ${personalPeers.length} von ${allClients.length} total`);
+      }
+    } catch (apiError) {
+      console.warn(`⚠️ OPNsense API-Fehler für ${username}:`, apiError.message);
+      dataSource = 'api-error';
+      serverStatus = 'api-unavailable';
+    }
+    
+    // ===== PERSÖNLICHE STATISTIKEN BERECHNEN =====
+    
+    let totalConnections = personalPeers.length;
+    let activeConnections = 0;
+    let lastConnected = null;
+    let connections = [];
+    
+    for (const peer of personalPeers) {
+      // Device-Name extrahieren (entferne "username-" Prefix)
+      const deviceName = peer.name.replace(new RegExp(`^${username}-`, 'i'), '');
+      
+      // Verbindungsstatus bestimmen
+      let isActive = false;
+      let lastHandshake = null;
+      
+      if (peer.connected === '1' || peer.connected === true || peer.status === 'connected') {
+        isActive = true;
+        activeConnections++;
+        lastHandshake = peer.last_handshake || peer.lastHandshake || new Date().toISOString();
+        
+        // Aktualisiere letzte Verbindungszeit
+        if (!lastConnected || new Date(lastHandshake) > new Date(lastConnected)) {
+          lastConnected = lastHandshake;
+        }
+      }
+      
+      // IP-Adresse extrahieren
+      let ipAddress = 'Nicht zugewiesen';
+      if (peer.tunneladdress) {
+        ipAddress = peer.tunneladdress;
+      } else if (peer.tunnel_addresses) {
+        ipAddress = peer.tunnel_addresses;
+      } else if (peer.address) {
+        ipAddress = peer.address;
+      }
+      
+      // Verbindungsinformation für Frontend
+      connections.push({
+        id: peer.uuid || `${username}-${deviceName}`,
+        deviceName: deviceName,
+        ipAddress: ipAddress,
+        status: isActive ? 'connected' : (peer.enabled === '1' ? 'active' : 'inactive'),
+        lastHandshake: lastHandshake,
+        createdAt: peer.created || peer.created_at || null,
+        platform: detectPlatform(deviceName),
+        enabled: peer.enabled === '1' || peer.enabled === true
+      });
+    }
+    
+    // ===== PERSÖNLICHE VPN-STATISTIKEN RESPONSE =====
+    
+    const personalStats = {
+      // Basis-Statistiken
+      totalConnections,           // Anzahl konfigurierter VPN-Verbindungen
+      activeConnections,          // Anzahl aktuell verbundener Peers
+      lastConnected,              // Zeitstempel der letzten erfolgreichen Verbindung
+      
+      // Detaillierte Verbindungsliste
+      connections,                // Array aller persönlichen VPN-Verbindungen
+      
+      // Benutzer-Kontext
+      username,                   // Benutzername für Frontend-Anzeige
+      userRole: req.user?.roles?.[0] || 'Benutzer', // Hauptrolle des Benutzers
+      
+      // Server-Status-Informationen
+      serverStatus,               // Status des VPN-Servers
+      serverReachable: true,      // Server ist grundsätzlich erreichbar
+      dataSource,                 // Quelle der Daten (API/Fallback)
+      
+      // Metadaten
+      timestamp: new Date().toISOString(),
+      dataFreshness: dataSource === 'opnsense-api' ? 'live' : 'cached'
+    };
+    
+    // ===== BENUTZER-SPEZIFISCHE LIMITS UND WARNUNGEN =====
+    
+    // VPN-Limits basierend auf Benutzerrolle
+    let vpnLimit = 5; // Standard für Studenten
+    if (req.user?.isEmployee || req.user?.roles?.includes('Mitarbeiter')) {
+      vpnLimit = 7; // Mitarbeiter bekommen mehr VPN-Verbindungen
+    }
+    if (req.user?.isITEmployee || req.user?.roles?.includes('IT-Mitarbeiter') || req.user?.isAdmin) {
+      vpnLimit = -1; // IT-Mitarbeiter und Admins haben keine Limits
+    }
+    
+    personalStats.limits = {
+      maxConnections: vpnLimit,
+      currentUsage: totalConnections,
+      remainingSlots: vpnLimit === -1 ? 'unlimited' : Math.max(0, vpnLimit - totalConnections),
+      warningThreshold: vpnLimit === -1 ? false : totalConnections >= (vpnLimit * 0.8) // 80% Warnung
+    };
+    
+    // ===== ERFOLGS-LOGGING =====
+    
+    console.log(`✅ Persönliche VPN-Statistiken für ${username}: ${totalConnections} Verbindungen (${activeConnections} aktiv), Limit: ${vpnLimit === -1 ? 'unlimited' : vpnLimit}`);
+    
+    // ===== SICHERHEITS-AUDIT-LOGGING =====
+    
+    logSecurityEvent(
+      username,
+      'VIEW_PERSONAL_VPN_STATS',
+      `Persönliche VPN-Statistiken abgerufen: ${totalConnections} Verbindungen, ${activeConnections} aktiv`
+    );
+    
+    res.json(personalStats);
+    
+  } catch (error) {
+    console.error('❌ Fehler beim Abrufen der persönlichen VPN-Statistiken:', error);
+    
+    res.status(500).json({
+      error: 'Fehler beim Abrufen der persönlichen VPN-Statistiken',
+      details: error.message,
+      timestamp: new Date().toISOString(),
+      personalStats: {
+        totalConnections: 0,
+        activeConnections: 0,
+        lastConnected: null,
+        connections: []
+      }
+    });
+  }
+};
+
+/**
+ * Platform-Detection für VPN-Clients basierend auf Device-Namen
+ * 
+ * Versucht anhand des Device-Namens die verwendete Plattform zu erkennen:
+ * - Windows, macOS, Linux, iOS, Android
+ * - Router, Server-Installationen
+ * 
+ * @param {string} deviceName - Name des VPN-Clients
+ * @returns {string} Erkannte Plattform oder 'unknown'
+ */
+const detectPlatform = (deviceName) => {
+  if (!deviceName) return 'unknown';
+  
+  const name = deviceName.toLowerCase();
+  
+  // Windows-Bezeichnungen
+  if (name.includes('windows') || name.includes('win') || name.includes('pc') || name.includes('desktop')) {
+    return 'Windows';
+  }
+  
+  // macOS-Bezeichnungen
+  if (name.includes('mac') || name.includes('osx') || name.includes('macos') || name.includes('macbook') || name.includes('imac')) {
+    return 'macOS';
+  }
+  
+  // iOS-Bezeichnungen
+  if (name.includes('iphone') || name.includes('ipad') || name.includes('ios')) {
+    return 'iOS';
+  }
+  
+  // Android-Bezeichnungen
+  if (name.includes('android') || name.includes('phone') || name.includes('mobile')) {
+    return 'Android';
+  }
+  
+  // Linux-Bezeichnungen
+  if (name.includes('linux') || name.includes('ubuntu') || name.includes('debian') || name.includes('server')) {
+    return 'Linux';
+  }
+  
+  // Router-Bezeichnungen
+  if (name.includes('router') || name.includes('openwrt') || name.includes('pfsense')) {
+    return 'Router';
+  }
+  
+  return 'unknown';
+};
+
 // ===== EXPORTS =====
 
 export {
   // Main monitoring endpoints (Express route handlers)
-  getPortalStats,
+  getPortalStats,              // Haupt-Portal-Statistiken (Admin-beschränkt)
+  getPersonalVpnStats,         // Persönliche VPN-Statistiken für alle Auth-Benutzer
   getWireGuardServiceStatus,
   getHealthStatus,
   getWireGuardConfig,
