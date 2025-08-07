@@ -223,12 +223,13 @@ export const searchGroups = async (searchPattern = '*') => {
         return reject(err);
       }
 
-      // Suche nach Gruppen mit dem angegebenen Muster
-      const searchFilter = `(&(objectClass=group)(cn=${searchPattern}))`;
+      // Verbesserte Suche nach Gruppen mit mehreren objektklassen
+      const searchFilter = `(|(objectClass=group)(objectClass=groupOfNames)(objectClass=posixGroup)(objectClass=organizationalUnit))`;
       const searchOptions = {
         scope: 'sub',
         filter: searchFilter,
-        attributes: ['cn', 'description', 'member']
+        attributes: ['cn', 'name', 'description', 'member', 'memberOf', 'members', 'objectClass', 'ou'],
+        sizeLimit: 100 // Begrenze Ergebnisse zur Performance
       };
 
       client.search(process.env.LDAP_SEARCH_BASE, searchOptions, (err, searchRes) => {
@@ -240,25 +241,42 @@ export const searchGroups = async (searchPattern = '*') => {
         let groups = [];
 
         searchRes.on('searchEntry', (entry) => {
-          const attributes = entry.object;
-          
-          // Sichere Behandlung aller Attribute
-          if (!attributes) {
-            console.warn('LDAP Entry ohne Attribute gefunden, überspringe...');
-            return;
-          }
-          
-          // Sichere Behandlung der member-Attribute
-          let memberCount = 0;
-          if (attributes.member) {
-            memberCount = Array.isArray(attributes.member) ? attributes.member.length : 1;
-          }
+          try {
+            const attributes = entry.object || entry.attributes;
+            
+            // Debug-Logging für LDAP-Struktur
+            if (!attributes) {
+              console.warn('LDAP Entry ohne Attribute gefunden, überspringe...');
+              return;
+            }
+            
+            // Alternative Attribut-Zugriffe versuchen
+            const groupName = attributes.cn || attributes.name || attributes.sAMAccountName || 'Unbekannt';
+            const description = attributes.description || attributes.info || '';
+            
+            // Sichere Behandlung der member-Attribute mit verschiedenen Formaten
+            let memberCount = 0;
+            if (attributes.member) {
+              memberCount = Array.isArray(attributes.member) ? attributes.member.length : 1;
+            } else if (attributes.memberOf) {
+              memberCount = Array.isArray(attributes.memberOf) ? attributes.memberOf.length : 1;
+            } else if (attributes.members) {
+              memberCount = Array.isArray(attributes.members) ? attributes.members.length : 1;
+            }
 
-          groups.push({
-            name: attributes.cn || 'Unbekannt',
-            description: attributes.description || '',
-            memberCount: memberCount
-          });
+            // Nur Gruppen mit gültigen Namen hinzufügen
+            if (groupName !== 'Unbekannt') {
+              groups.push({
+                name: groupName,
+                description: description,
+                memberCount: memberCount,
+                dn: entry.dn || 'unknown'
+              });
+              console.log(`📋 Gefundene Gruppe: ${groupName} (${memberCount} Mitglieder)`);
+            }
+          } catch (parseError) {
+            console.warn('Fehler beim Parsen der LDAP-Gruppe:', parseError.message);
+          }
         });
 
         searchRes.on('error', (err) => {

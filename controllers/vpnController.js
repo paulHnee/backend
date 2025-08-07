@@ -93,18 +93,31 @@ const generateWireGuardKeyPair = async () => {
  * Nächste verfügbare IP-Adresse im VPN-Subnetz finden
  */
 const getNextAvailableIP = async () => {
-  // Simulierte IP-Verwaltung (in Produktion würde hier eine Datenbank verwendet)
-  const usedIPs = await getUsedIPAddresses(); // Mock-Funktion
-  const subnet = '10.8.0';
-  
-  for (let i = 2; i <= 254; i++) {
-    const ip = `${subnet}.${i}`;
-    if (!usedIPs.includes(ip)) {
-      return ip;
+  try {
+    console.log('🔍 Suche verfügbare IP-Adresse im VPN-Subnetz...');
+    
+    // Verwendete IP-Adressen aus OPNsense abrufen
+    const usedIPs = await getUsedIPAddresses();
+    console.log(`📊 Verwendete IPs: ${usedIPs.length}`);
+    
+    // Standard-VPN-Subnetz für HNEE
+    const subnet = '10.88.1'; // Basierend auf der echten OPNsense-Konfiguration
+    
+    // Suche verfügbare IP im Bereich 10.88.1.2 - 10.88.1.254
+    for (let i = 2; i <= 254; i++) {
+      const ip = `${subnet}.${i}`;
+      if (!usedIPs.includes(ip)) {
+        console.log(`✅ Verfügbare IP gefunden: ${ip}`);
+        return ip;
+      }
     }
+    
+    console.error('❌ Keine verfügbaren IP-Adressen im VPN-Subnetz gefunden');
+    throw new Error('Keine verfügbaren IP-Adressen im VPN-Subnetz');
+  } catch (error) {
+    console.error('❌ Fehler bei IP-Adresszuweisung:', error.message);
+    throw error;
   }
-  
-  throw new Error('Keine verfügbaren IP-Adressen im VPN-Subnetz');
 };
 
 /**
@@ -113,35 +126,77 @@ const getNextAvailableIP = async () => {
  */
 const getUserVPNFiles = async (username) => {
   try {
+    console.log(`🔍 Lade VPN-Peers für Benutzer: ${username}`);
+    
     const opnsense = getOPNsenseAPI();
     const allClients = await opnsense.getClients();
     
-    // Filter nur Clients des aktuellen Benutzers
+    console.log(`📊 Gefundene Clients insgesamt: ${allClients.length}`);
+    
+    // Filter nur Clients des aktuellen Benutzers (username-*)
     const pattern = `${username}-`;
     const userClients = allClients.filter(client => 
-      client.name && client.name.startsWith(pattern)
+      client.name && client.name.toLowerCase().startsWith(pattern.toLowerCase())
     );
+    
+    console.log(`👤 Gefundene Clients für ${username}: ${userClients.length}`);
     
     const connections = [];
     for (const client of userClients) {
-      const deviceName = client.name.replace(pattern, '');
-      connections.push({
+      // Device-Name extrahieren (entferne "username-" Prefix)
+      const deviceName = client.name.replace(new RegExp(`^${username}-`, 'i'), '');
+      
+      // Status-Bestimmung basierend auf verschiedenen API-Feldern
+      let status = 'inactive';
+      let lastConnected = null;
+      
+      if (client.enabled === '1' || client.enabled === true) {
+        status = 'active';
+      }
+      
+      // Verbindungsstatus aus verschiedenen möglichen Feldern
+      if (client.connected === '1' || client.connected === true || client.status === 'connected') {
+        status = 'connected';
+        lastConnected = client.last_handshake || client.lastHandshake || new Date().toISOString();
+      }
+      
+      // IP-Adresse aus verschiedenen möglichen Feldern extrahieren
+      let ipAddress = 'Nicht zugewiesen';
+      if (client.tunneladdress) {
+        ipAddress = client.tunneladdress;
+      } else if (client.tunnel_addresses) {
+        ipAddress = client.tunnel_addresses;
+      } else if (client.address) {
+        ipAddress = client.address;
+      }
+      
+      const connection = {
         id: client.uuid || crypto.randomUUID(),
         name: deviceName,
+        fullName: client.name, // Vollständiger Name für Debugging
         filename: `${client.name}.conf`,
-        status: client.enabled === '1' ? 'active' : 'inactive',
-        createdAt: client.created_at || new Date().toISOString(),
-        lastConnected: client.last_handshake || null,
-        ipAddress: client.tunnel_addresses || 'Nicht zugewiesen',
+        status: status,
+        enabled: client.enabled === '1' || client.enabled === true,
+        createdAt: client.created || client.created_at || new Date().toISOString(),
+        lastConnected: lastConnected,
+        ipAddress: ipAddress,
         platform: detectPlatform(deviceName),
-        publicKey: client.public_key || '',
-        tunnelAddress: client.tunnel_addresses || ''
-      });
+        publicKey: client.pubkey || client.public_key || '',
+        tunnelAddress: ipAddress,
+        servers: client.servers || '',
+        comment: client.comment || '',
+        // Zusätzliche Debug-Informationen
+        rawClient: process.env.NODE_ENV === 'development' ? client : undefined
+      };
+      
+      connections.push(connection);
     }
+    
+    console.log(`✅ VPN-Verbindungen für ${username} erfolgreich geladen: ${connections.length}`);
     
     return connections;
   } catch (error) {
-    console.error('Fehler beim Abrufen der VPN-Verbindungen von OPNsense:', error);
+    console.error(`❌ Fehler beim Abrufen der VPN-Verbindungen von OPNsense für ${username}:`, error.message);
     // Fallback auf leeres Array bei API-Fehlern
     return [];
   }
@@ -167,22 +222,42 @@ export const getUserVPNConnections = async (req, res) => {
   try {
     const username = req.user.username;
     
-    // VPN-Dateien des Benutzers lesen
+    console.log(`📡 API-Aufruf: VPN-Verbindungen für Benutzer ${username}`);
+    
+    // VPN-Peers des Benutzers aus OPNsense abrufen
     const connections = await getUserVPNFiles(username);
     const userLimit = getVPNLimitForUser(req.user);
+    
+    // Zusätzliche Statistiken berechnen
+    const activeCount = connections.filter(conn => conn.status === 'active' || conn.enabled).length;
+    const connectedCount = connections.filter(conn => conn.status === 'connected').length;
+    
+    // Audit-Log
+    logSecurityEvent(username, 'VIEW_VPN_CONNECTIONS', 
+      `VPN-Verbindungen abgerufen: ${connections.length} total, ${activeCount} aktiv, ${connectedCount} verbunden`);
+    
+    console.log(`✅ VPN-Verbindungen für ${username} erfolgreich geladen: ${connections.length} total, ${activeCount} aktiv`);
     
     res.json({
       success: true,
       connections: connections,
+      stats: {
+        total: connections.length,
+        active: activeCount,
+        connected: connectedCount,
+        inactive: connections.length - activeCount
+      },
       limit: userLimit,
       count: connections.length,
-      canCreateMore: userLimit === -1 || connections.length < userLimit
+      canCreateMore: userLimit === -1 || connections.length < userLimit,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Fehler beim Abrufen der VPN-Verbindungen:', error);
+    console.error(`❌ Fehler beim Abrufen der VPN-Verbindungen für ${req.user?.username}:`, error.message);
     res.status(500).json({
       success: false,
-      error: 'Fehler beim Abrufen der VPN-Verbindungen'
+      error: 'Fehler beim Abrufen der VPN-Verbindungen',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -634,30 +709,47 @@ PersistentKeepalive = 25
 }
 
 /**
- * Mock: Verwendete IP-Adressen abrufen
+ * Verwendete IP-Adressen aus OPNsense abrufen
  */
 const getUsedIPAddresses = async () => {
   try {
+    console.log('🔍 Lade verwendete IP-Adressen aus OPNsense...');
+    
     const opnsense = getOPNsenseAPI();
     const clients = await opnsense.getClients();
     
-    // Extrahiere verwendete IP-Adressen aus allen Clients
-    const usedIPs = ['10.8.0.1']; // Server-IP reserviert
+    // Server-IP und Gateway reservieren
+    const usedIPs = ['10.88.1.1']; // Server-IP reserviert
     
     clients.forEach(client => {
-      if (client.tunnel_addresses) {
-        // Extrahiere IP aus "10.8.0.5/32" Format
-        const ip = client.tunnel_addresses.split('/')[0];
-        if (ip && ip.startsWith('10.8.0.')) {
+      // Verschiedene Feldnamen für IP-Adressen prüfen
+      let tunnelAddress = null;
+      
+      if (client.tunneladdress) {
+        tunnelAddress = client.tunneladdress;
+      } else if (client.tunnel_addresses) {
+        tunnelAddress = client.tunnel_addresses;
+      } else if (client.address) {
+        tunnelAddress = client.address;
+      }
+      
+      if (tunnelAddress) {
+        // Extrahiere IP aus "10.88.1.5/32" Format
+        const ip = tunnelAddress.split('/')[0];
+        if (ip && ip.startsWith('10.88.1.')) {
           usedIPs.push(ip);
         }
       }
     });
     
+    console.log(`✅ Verwendete IP-Adressen geladen: ${usedIPs.length} (${usedIPs.slice(0, 5).join(', ')}...)`);
+    
     return usedIPs;
   } catch (error) {
-    console.error('Fehler beim Abrufen verwendeter IPs:', error);
+    console.error('❌ Fehler beim Abrufen verwendeter IPs:', error.message);
     // Fallback auf Standard-IPs
-    return ['10.8.0.1', '10.8.0.2', '10.8.0.3'];
+    const fallbackIPs = ['10.88.1.1', '10.88.1.2', '10.88.1.3'];
+    console.log(`⚠️ Fallback auf Standard-IPs: ${fallbackIPs.join(', ')}`);
+    return fallbackIPs;
   }
 };
