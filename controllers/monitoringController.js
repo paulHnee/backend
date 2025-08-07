@@ -282,15 +282,6 @@ const getUserStatisticsWithLdapUtils = async () => {
     
     console.warn('⚠️ New user statistics not available - would require real registration tracking');
     
-    // ===== NO FAKE MONTHLY TRENDS =====
-    
-    // Don't generate fake monthly trend data - only report real historical data
-    const monthlyTrends = {
-      current: totalUsers,                     // Only current month is real
-      historical: null,                       // No historical data available
-      note: 'Historical trends require database tracking of user registrations'
-    };
-
     // ===== RÜCKGABE-OBJEKT ZUSAMMENSTELLEN =====
     
     // Vollständiges Statistik-Objekt mit allen relevanten Daten zurückgeben
@@ -310,8 +301,7 @@ const getUserStatisticsWithLdapUtils = async () => {
         itsz: totalITSZ                        // ITSZ-Team-Mitglieder
       },
       
-      // Zeitliche Trends und Metadaten
-      monthlyTrends,                           // Monatliche Benutzertrends
+      // Metadaten
       lastUpdated: new Date().toISOString(),   // Zeitstempel der Datenaktualisierung
       dataSource: 'ldap-utils',               // Datenquelle: Moderne ldapUtils
       details: {
@@ -342,13 +332,6 @@ const getUserStatisticsWithLdapUtils = async () => {
         mitarbeiter: 0,
         dozenten: 0,
         itsz: 0
-      },
-      
-      // Leere monatliche Trends
-      monthlyTrends: {
-        january: 0, february: 0, march: 0, april: 0,
-        may: 0, june: 0, july: 0, august: 0,
-        newThisMonth: 0
       },
       
       // Fehlermetadaten
@@ -558,13 +541,6 @@ const getUserStatistics = async () => {
         itsz: 0           // ITSZ-Team-Anzahl
       },
       
-      // Leere monatliche Trends für alle Monate
-      monthlyTrends: {
-        january: 0, february: 0, march: 0, april: 0,
-        may: 0, june: 0, july: 0, august: 0,
-        newThisMonth: 0    // Keine neuen Benutzer
-      },
-      
       // Metadaten für Debugging und Status-Tracking
       lastUpdated: new Date().toISOString(),     // Aktueller Zeitstempel
       source: 'fallback',                        // Markiere als Fallback-Daten
@@ -693,25 +669,19 @@ const checkWireGuardService = async () => {
 };
 
 /**
- * Umfassende VPN-Peer-Statistiken mit zeitlichen Metriken und OPNsense-Integration
+ * VPN-Peer-Statistiken mit OPNsense-Integration
  * 
- * Diese Funktion ruft detaillierte VPN-Statistiken ab und berechnet zeitliche Metriken:
+ * Diese Funktion ruft aktuelle VPN-Statistiken ab:
  * - Integriert OPNsense-API-Aufrufe über Circuit Breaker Pattern
- * - Berechnet tägliche und wöchentliche Peer-Trends
  * - Implementiert robuste Fallback-Strategien bei API-Fehlern
- * - Simuliert realistische Benutzertrends basierend auf Hochschul-Nutzungsmustern
+ * - Liefert nur reale Daten ohne Schätzungen
  * 
  * Datenquellen:
  * 1. OPNsense WireGuard-API (/api/wireguard/service/show)
  * 2. Server-Konnektivitätsprüfung (Ping)
  * 3. WireGuard-Service-Verfügbarkeit (Port 51820)
  * 
- * Zeitliche Metriken-Berechnung:
- * - Neue Peers pro Tag: Basierend auf Wochentag-Mustern
- * - Neue Peers pro Woche: Basierend auf Semester-Zyklen
- * - Hochschul-spezifische Nutzungsmuster berücksichtigt
- * 
- * @returns {Promise<Object>} Vollständige VPN-Statistiken mit zeitlichen Metriken
+ * @returns {Promise<Object>} VPN-Statistiken mit aktuellen Peer-Daten
  */
 const getVPNPeerStatistics = async () => {
   console.log('📊 Rufe detaillierte VPN Peer-Statistiken ab...');
@@ -925,8 +895,8 @@ const getVPNPeerStatistics = async () => {
  * - Strukturierte Antwortformate für verschiedene Frontend-Komponenten
  * 
  * Antwortstruktur:
- * - vpn: VPN-Peer-Statistiken mit zeitlichen Metriken
- * - users: LDAP-Benutzerstatistiken mit Gruppen und Trends
+ * - vpn: VPN-Peer-Statistiken
+ * - users: LDAP-Benutzerstatistiken mit Gruppen
  * - services: Service-Status-Informationen
  * - circuitBreaker: Resilience-Pattern-Status
  * - summary: Aggregierte Übersichts-Metriken
@@ -1011,7 +981,6 @@ const getPortalStats = async (req, res) => {
         activeToday: userStats.activeToday,                // Aktive Benutzer heute
         newUsersThisMonth: userStats.newUsersThisMonth || 0, // Neue Benutzer diesen Monat
         groups: userStats.groups,                          // Gruppierte Benutzerstatistiken
-        monthlyTrends: userStats.monthlyTrends || {},      // Monatliche Trend-Daten
         lastUpdated: userStats.lastUpdated,                // Zeitstempel der Datenaktualisierung
         dataSource: userStats.source || userStats.dataSource || 'ldap' // LDAP-Datenquelle
       },
