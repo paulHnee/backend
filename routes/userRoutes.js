@@ -7,8 +7,7 @@
 import express from 'express';
 import { 
   getUserProfile,
-  getQuickActions,
-  getContactInfo
+  getQuickActions
 } from '../controllers/userController.js';
 
 const router = express.Router();
@@ -18,8 +17,5 @@ router.get('/profile', getUserProfile);
 
 // ===== QUICK ACCESS =====
 router.get('/quick-actions', getQuickActions);
-
-// ===== CONTACT INFO =====
-router.get('/contact-info', getContactInfo);
 
 export default router;

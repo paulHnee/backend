@@ -103,6 +103,8 @@ import {
 import { router as authRoutes } from './routes/authRoutes.js';
 import { router as vpnRoutes } from './routes/vpnRoutes.js';
 import { router as adminRoutes } from './routes/adminRoutes.js';
+import userRoutes from './routes/userRoutes.js';
+import integrationRoutes from './routes/integrationRoutes.js';
 import { corsOptions } from './config/cors.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -385,13 +387,17 @@ app.get('/api/browser-reset', (req, res) => {
  * Route-Struktur:
  * - /api/* -> authRoutes (Authentifizierung, Session-Management)
  * - /api/vpn/* -> vpnRoutes (VPN-Management-Funktionen)
- * - /api/admin/* -> adminRoutes (Administrative Funktionen)
+ * - /api/admin/* -> adminRoutes (System-Monitoring und Read-Only Konfiguration)
+ * - /api/user/* -> userRoutes (Benutzer-spezifische Funktionen)
+ * - /api/integration/* -> integrationRoutes (Externe Integrationen)
  * 
  * @author Paul Buchwald - ITSZ Team
  */
 app.use('/api', authRoutes);  // Auth-Routen unter /api mounten
 app.use('/api/vpn', vpnRoutes); // VPN-Routen unter /api/vpn mounten
-app.use('/api/admin', adminRoutes); // Admin-Routen unter /api/admin mounten
+app.use('/api/admin', adminRoutes); // System-Routen unter /api/admin mounten
+app.use('/api/user', userRoutes); // User-Routen unter /api/user mounten
+app.use('/api/integration', integrationRoutes); // Integration-Routen unter /api/integration mounten
 
 /**
  * Error-Handler (Reihenfolge ist wichtig - diese müssen als letztes definiert werden!)

@@ -103,6 +103,13 @@ export const getGroupMembers = async (groupName) => {
 
         searchRes.on('searchEntry', (entry) => {
           const attributes = entry.object;
+          
+          // Sichere Behandlung der Attribute
+          if (!attributes) {
+            console.warn('LDAP Entry ohne Attribute gefunden, überspringe...');
+            return;
+          }
+          
           if (attributes.member) {
             const memberArray = Array.isArray(attributes.member) 
               ? attributes.member 
@@ -234,12 +241,21 @@ export const searchGroups = async (searchPattern = '*') => {
 
         searchRes.on('searchEntry', (entry) => {
           const attributes = entry.object;
-          const memberCount = attributes.member 
-            ? (Array.isArray(attributes.member) ? attributes.member.length : 1)
-            : 0;
+          
+          // Sichere Behandlung aller Attribute
+          if (!attributes) {
+            console.warn('LDAP Entry ohne Attribute gefunden, überspringe...');
+            return;
+          }
+          
+          // Sichere Behandlung der member-Attribute
+          let memberCount = 0;
+          if (attributes.member) {
+            memberCount = Array.isArray(attributes.member) ? attributes.member.length : 1;
+          }
 
           groups.push({
-            name: attributes.cn,
+            name: attributes.cn || 'Unbekannt',
             description: attributes.description || '',
             memberCount: memberCount
           });

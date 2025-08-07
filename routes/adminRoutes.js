@@ -1,9 +1,8 @@
 /**
- * Admin Routes - Getrennte Monitoring und Administration
+ * System Routes - Monitoring und Konfiguration
  * 
- * Diese Datei definiert sowohl Monitoring- als auch Admin-Routen.
- * Monitoring: Reports-Dashboard Daten
- * Administration: Benutzer- und Systemverwaltung
+ * Diese Datei definiert System-Routen für Monitoring und grundlegende Konfiguration.
+ * Keine Admin-Operationen - nur Überwachung und Read-Only Konfiguration.
  * 
  * Monitoring Endpunkte:
  * - GET /api/admin/stats - Portal-Dashboard-Statistiken
@@ -12,19 +11,10 @@
  * - GET /api/admin/wireguard/config - WireGuard Konfiguration
  * - GET /api/admin/circuit-breaker/status - Circuit Breaker Status
  * - POST /api/admin/circuit-breaker/reset - Circuit Breaker Reset
- * 
- * Administration Endpunkte:
- * - POST /api/admin/users/:username/groups/:groupDN/add - User zu Gruppe
- * - POST /api/admin/users/:username/groups/:groupDN/remove - User aus Gruppe  
- * - POST /api/admin/users/:username/toggle - Konto aktivieren/deaktivieren
- * - POST /api/admin/users/:username/reset-password - Passwort zurücksetzen
- * - GET /api/admin/system/config - Systemkonfiguration
- * - POST /api/admin/system/config - Systemkonfiguration ändern
- * - GET /api/admin/audit-logs - Audit-Logs
- * - POST /api/admin/batch/group-operations - Batch-Gruppenoperationen
+ * - GET /api/admin/system/config - Systemkonfiguration (Read-Only)
  * 
  * @author Paul Buchwald - ITSZ Team
- * @version 2.0.0 - Monitoring/Administration Trennung
+ * @version 3.0.0 - Nur Monitoring, keine Admin-Operationen
  */
 
 import express from 'express';
@@ -41,16 +31,9 @@ import {
   getWireGuardConfig
 } from '../controllers/monitoringController.js';
 
-// Admin Controller für reine Administrations-Funktionen
+// System-Konfiguration (Read-Only)
 import {
-  addUserToGroup,
-  removeUserFromGroup,
-  toggleUserAccount,
-  resetUserPassword,
-  getSystemConfig,
-  updateSystemConfig,
-  getAuditLogs,
-  batchGroupOperations
+  getSystemConfig
 } from '../controllers/adminController.js';
 
 // Router-Instanz erstellen
@@ -79,36 +62,11 @@ router.get('/circuit-breaker/status', verifyToken, getCircuitBreakerStatus);
 router.post('/circuit-breaker/reset', verifyToken, requireAdmin, resetCircuitBreaker);
 
 /**
- * Benutzer-Administration (LDAP)
+ * System-Konfiguration (Read-Only)
  */
 
-// Benutzer zu Gruppe hinzufügen
-router.post('/users/:username/groups/:groupDN/add', verifyToken, requireAdmin, addUserToGroup);
-
-// Benutzer aus Gruppe entfernen
-router.post('/users/:username/groups/:groupDN/remove', verifyToken, requireAdmin, removeUserFromGroup);
-
-// Benutzerkonto aktivieren/deaktivieren
-router.post('/users/:username/toggle', verifyToken, requireAdmin, toggleUserAccount);
-
-// Benutzer-Passwort zurücksetzen
-router.post('/users/:username/reset-password', verifyToken, requireAdmin, resetUserPassword);
-
-/**
- * System-Administration
- */
-
-// Systemkonfiguration abrufen
-router.get('/system/config', verifyToken, requireAdmin, getSystemConfig);
-
-// Systemkonfiguration aktualisieren
-router.post('/system/config', verifyToken, requireAdmin, updateSystemConfig);
-
-// Audit-Logs abrufen
-router.get('/audit-logs', verifyToken, requireAdmin, getAuditLogs);
-
-// Batch-Gruppenoperationen
-router.post('/batch/group-operations', verifyToken, requireAdmin, batchGroupOperations);
+// Systemkonfiguration abrufen (nur lesend)
+router.get('/system/config', verifyToken, getSystemConfig);
 
 /**
  * Router exportieren

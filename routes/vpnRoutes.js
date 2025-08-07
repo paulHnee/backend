@@ -29,7 +29,8 @@ import {
   createVPNConnection,
   downloadVPNConfig,
   deleteVPNConnection,
-  getVPNStats
+  getVPNStats,
+  generateVpnConfig
 } from '../controllers/vpnController.js';
 import { verifyToken } from '../middleware/authMiddleware.js';
 
@@ -150,6 +151,34 @@ router.delete('/connections/:id', verifyToken, deleteVPNConnection);
  * }
  */
 router.get('/stats', verifyToken, getVPNStats);
+
+/**
+ * VPN-Konfiguration für verschiedene Plattformen generieren
+ * GET /api/vpn/config
+ * 
+ * Generiert VPN-Konfigurationsdateien für verschiedene Plattformen
+ * (Windows, macOS, iOS, Android). Ersetzt die alte Integration-Route.
+ * 
+ * Authentifizierung: JWT-Token erforderlich
+ * Berechtigung: Alle authentifizierten Benutzer
+ * 
+ * Query Parameters:
+ * - platform: windows | macos | ios | android (default: windows)
+ * 
+ * Response:
+ * {
+ *   "success": true,
+ *   "platform": "windows",
+ *   "config": {
+ *     "filename": "hnee-vpn-user-windows.ovpn",
+ *     "instructions": [...],
+ *     "downloadUrl": "/api/vpn/download/user/windows",
+ *     "validUntil": "2024-07-29T..."
+ *   },
+ *   "security": {...}
+ * }
+ */
+router.get('/config', verifyToken, generateVpnConfig);
 
 /**
  * Alle VPN-Verbindungen für Administratoren

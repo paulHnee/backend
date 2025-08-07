@@ -29,45 +29,59 @@
  */
 
 import { logSecurityEvent } from '../utils/securityLogger.js';
+import ldapAuth from '../config/ldap.js';
 
 /**
- * Benutzer-Profil abrufen
+ * Benutzer-Profil abrufen (ECHTE LDAP-DATEN)
  */
 export const getUserProfile = async (req, res) => {
   try {
     const user = req.user?.username || 'unknown';
     
-    console.log(`👤 Profil-Abruf für Benutzer: ${user}`);
+    console.log(`👤 LDAP-Profil-Abruf für Benutzer: ${user}`);
 
-    // Mock-Profildaten (in echter Implementierung aus LDAP/DB)
-    const profile = {
-      username: user,
-      displayName: `${user.charAt(0).toUpperCase()}${user.slice(1)}`,
-      email: `${user}@hnee.de`,
-      department: 'Forstwirtschaft', // Beispiel
-      role: 'Student', // oder 'Mitarbeiter', 'Professor'
-      lastLogin: new Date().toISOString(),
-      recentServices: [
-        { name: 'Email', status: 'active', lastUsed: '2025-08-06' },
-        { name: 'VPN', status: 'connected', lastUsed: '2025-08-05' }
-      ],
-      preferences: {
-        language: 'de',
-        notifications: true,
-        theme: 'auto'
+    // Echte LDAP-Daten abrufen
+    ldapAuth.getUserInfo(user, (err, ldapUserInfo) => {
+      if (err) {
+        console.error('LDAP Fehler:', err);
+        // Fallback bei LDAP-Fehlern
+        return res.status(500).json({
+          error: 'Fehler beim Laden der LDAP-Profildaten',
+          details: err.message
+        });
       }
-    };
 
-    res.json({
-      success: true,
-      profile,
-      timestamp: new Date().toISOString()
+      // LDAP-Daten in Profil-Format umwandeln
+      const profile = {
+        username: user,
+        displayName: ldapUserInfo.displayName || ldapUserInfo.cn || user,
+        email: ldapUserInfo.email || ldapUserInfo.mail || `${user}@hnee.de`,
+        organisation: ldapUserInfo.organisation || ldapUserInfo.department || ldapUserInfo.ou || 'Unbekannt',
+        role: mapLdapGroupsToRole(ldapUserInfo.groups || []),
+        groups: ldapUserInfo.groups || [],
+        lastLogin: new Date().toISOString(),
+        preferences: {
+          language: 'de',
+          notifications: true,
+          theme: 'auto'
+        },
+        ldapSource: true // Kennzeichnung für echte LDAP-Daten
+      };
+
+      logSecurityEvent(user, 'LDAP_PROFILE_ACCESS', 
+        `LDAP-Profil abgerufen: ${profile.displayName}`);
+
+      res.json({
+        success: true,
+        profile,
+        timestamp: new Date().toISOString()
+      });
     });
 
   } catch (error) {
-    console.error('Fehler beim Profil-Abruf:', error);
+    console.error('Fehler beim LDAP-Profil-Abruf:', error);
     res.status(500).json({ 
-      error: 'Fehler beim Laden des Profils',
+      error: 'Fehler beim Laden des LDAP-Profils',
       details: error.message
     });
   }
@@ -86,24 +100,16 @@ export const getQuickActions = async (req, res) => {
         title: 'Support-Ticket (Zammad)',
         description: 'Problem an ITSZ-Team über Zammad melden',
         icon: 'help-circle',
-        action: 'https://helpdesk.hnee.de',
+        action: 'https://Zammad.hnee.de',
         category: 'support',
         external: true
-      },
-      {
-        id: 'itsz_contact',
-        title: 'ITSZ kontaktieren',
-        description: 'Direkter Kontakt zum IT-Service-Zentrum',
-        icon: 'phone',
-        action: '/api/user/contact-info',
-        category: 'support'
       },
       {
         id: 'email_webmail',
         title: 'HNEE Email',
         description: 'Webmail-Zugang',
         icon: 'mail',
-        action: 'https://mail.hnee.de',
+        action: 'https://webmail.hnee.de',
         category: 'communication',
         external: true
       },
@@ -112,7 +118,7 @@ export const getQuickActions = async (req, res) => {
         title: 'Knowledge Base',
         description: 'FAQ und Anleitungen (Zammad)',
         icon: 'book',
-        action: 'https://helpdesk.hnee.de/help',
+        action: 'https://zammad.hnee.de/help',
         category: 'support',
         external: true
       }
@@ -121,7 +127,7 @@ export const getQuickActions = async (req, res) => {
     res.json({
       success: true,
       quickActions: quickActions,
-      categories: ['support', 'learning', 'communication'],
+      categories: ['support', 'communication'],
       timestamp: new Date().toISOString()
     });
 
@@ -134,70 +140,51 @@ export const getQuickActions = async (req, res) => {
   }
 };
 
+// ===== HELPER FUNCTIONS =====
+
 /**
- * ITSZ Kontakt-Informationen
+ * Mappt LDAP-Gruppen zu HNEE-Rollen
  */
-export const getContactInfo = async (req, res) => {
-  try {
-    const contactInfo = {
-      itsz: {
-        name: 'IT-Service-Zentrum (ITSZ)',
-        email: 'itsz@hnee.de',
-        phone: '+49 3334 657-123',
-        emergency: '+49 3334 657-999',
-        office: {
-          building: 'Hauptgebäude',
-          room: '1.2.34',
-          floor: '1. Obergeschoss'
-        },
-        hours: {
-          monday: '08:00 - 16:00',
-          tuesday: '08:00 - 16:00',
-          wednesday: '08:00 - 16:00',
-          thursday: '08:00 - 16:00',
-          friday: '08:00 - 15:00',
-          weekend: 'Nur Notfälle'
-        }
-      },
-      zammad: {
-        ticketSystem: 'https://helpdesk.hnee.de',
-        knowledgeBase: 'https://helpdesk.hnee.de/help',
-        description: 'Zammad-System für Support-Tickets und Knowledge Base'
-      },
-      team: [
-        {
-          name: 'Paul Buchwald',
-          role: 'Leiter ITSZ',
-          email: 'paul.buchwald@hnee.de',
-          phone: '+49 3334 657-124',
-          specialties: ['Netzwerk', 'Sicherheit']
-        },
-        {
-          name: 'Max Mustermann',
-          role: 'System-Administrator',
-          email: 'max.mustermann@hnee.de',
-          phone: '+49 3334 657-125',
-          specialties: ['Server', 'Email', 'Backup']
-        }
-      ],
-      emergencyInfo: {
-        afterHours: 'Bei kritischen Systemausfällen: +49 3334 657-999',
-        escalation: 'Rufbereitschaft außerhalb der Geschäftszeiten',
-        priority: 'Nur für schwerwiegende Störungen'
-      }
-    };
-
-    res.json({
-      success: true,
-      contactInfo: contactInfo,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Fehler bei Kontakt-Info:', error);
-    res.status(500).json({ 
-      error: 'Fehler beim Laden der Kontakt-Informationen',
-      details: error.message
-    });
+function mapLdapGroupsToRole(groups) {
+  if (!groups || !Array.isArray(groups)) return 'Unbekannt';
+  
+  // ITSZ-Administratoren (höchste Priorität)
+  if (groups.some(group => group.toLowerCase().includes('itszadmins') || 
+                           group.toLowerCase().includes('it-admin'))) {
+    return 'ITSZ-Administrator';
   }
-};
+  
+  // IT-Mitarbeiter
+  if (groups.some(group => group.toLowerCase().includes('it-mitarbeiter') || 
+                           group.toLowerCase().includes('itsz'))) {
+    return 'IT-Mitarbeiter';
+  }
+  
+  // Dozenten/Professoren
+  if (groups.some(group => group.toLowerCase().includes('dozenten') || 
+                           group.toLowerCase().includes('professoren') ||
+                           group.toLowerCase().includes('lehrpersonal'))) {
+    return 'Dozent/Professor';
+  }
+  
+  // Mitarbeiter (allgemein)
+  if (groups.some(group => group.toLowerCase().includes('mitarbeiter') || 
+                           group.toLowerCase().includes('staff'))) {
+    return 'Mitarbeiter';
+  }
+  
+  // Studenten
+  if (groups.some(group => group.toLowerCase().includes('studenten') || 
+                           group.toLowerCase().includes('students'))) {
+    return 'Student';
+  }
+  
+  // Gäste
+  if (groups.some(group => group.toLowerCase().includes('gast') || 
+                           group.toLowerCase().includes('guest'))) {
+    return 'Gast';
+  }
+  
+  // Standard-Fallback
+  return 'HNEE-Mitglied';
+}

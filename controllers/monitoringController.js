@@ -22,25 +22,9 @@ import ldapjs from 'ldapjs';
 import { isUserInGroup, getGroupMembers, searchGroups } from '../utils/ldapUtils.js';
 import { logSecurityEvent } from '../utils/securityLogger.js';
 import ldapAuth from '../config/ldap.js';
+import { getOPNsenseAPI } from '../config/opnsense.js';
 
 // ===== KONFIGURATION =====
-
-/**
- * OPNsense API-Konfiguration für WireGuard-Monitoring
- * 
- * Diese Konfiguration definiert:
- * - Primären Host (vpn.hnee.de) und Fallback-Host (127.0.0.1)
- * - API-Anmeldedaten aus Umgebungsvariablen
- * - Timeout und Retry-Einstellungen für robuste API-Aufrufe
- */
-const OPNSENSE_CONFIG = {
-  host: 'vpn.hnee.de',           // Primärer OPNsense-Server
-  fallbackHost: '127.0.0.1',     // Fallback für lokale Tests
-  apiKey: process.env.OPNSENSE_API_KEY || '',     // API-Schlüssel aus .env
-  apiSecret: process.env.OPNSENSE_API_SECRET || '', // API-Secret aus .env
-  timeout: 10000,                 // 10 Sekunden Timeout
-  retries: 2                      // Maximale Wiederholungsversuche
-};
 
 /**
  * Circuit Breaker Pattern für OPNsense API-Ausfallsicherheit
@@ -144,196 +128,6 @@ let serviceStatus = {
   vpn: { enabled: true, message: '' },      // VPN-Service aktiviert
   portal: { enabled: true, message: '' },   // Portal-Service aktiviert
   lastUpdated: new Date().toISOString()     // Letzte Aktualisierung
-};
-
-// ===== API-HILFSFUNKTIONEN =====
-
-/**
- * Authentifizierte HTTPS-Anfrage an die OPNsense API
- * 
- * Diese Funktion handhabt:
- * - HTTPS-Verbindungen mit Basic Authentication
- * - Retry-Logik mit exponentieller Backoff-Strategie
- * - Fallback-Host bei Verbindungsproblemen
- * - Circuit Breaker Integration
- * - Detaillierte Fehlerbehandlung und Logging
- * 
- * @param {string} endpoint - API-Endpunkt (z.B. 'wireguard/service/status')
- * @param {string} method - HTTP-Methode ('GET' oder 'POST')
- * @param {number} retryCount - Aktueller Wiederholungsversuch (0-basiert)
- * @param {string|null} useHost - Spezifischer Host oder null für Standard
- * @returns {Promise<Object|null>} API-Antwort oder null bei Fehler
- */
-const opnsenseRequest = async (endpoint, method = 'POST', retryCount = 0, useHost = null) => {
-  try {
-    // Prüfe ob API-Anmeldedaten konfiguriert sind
-    if (!OPNSENSE_CONFIG.apiKey || !OPNSENSE_CONFIG.apiSecret) {
-      console.warn('OPNsense API-Anmeldedaten nicht konfiguriert, überspringe API-Aufruf');
-      return null;
-    }
-
-    // Circuit Breaker: Prüfe ob API-Aufrufe erlaubt sind
-    if (!circuitBreaker.shouldAllowRequest()) {
-      const status = circuitBreaker.getStatus();
-      console.warn(`🚫 Circuit Breaker ist offen - überspringe API-Aufruf (${status.failures}/${status.maxFailures} Fehler, Reset in ${Math.round(status.timeUntilReset/1000)}s)`);
-      return null;
-    }
-
-    // Dynamischer Import von Node.js HTTPS-Modul (ESM-kompatibel)
-    const https = await import('https');
-    
-    // Basic Authentication Header erstellen
-    const auth = Buffer.from(`${OPNSENSE_CONFIG.apiKey}:${OPNSENSE_CONFIG.apiSecret}`).toString('base64');
-    
-    // Host-Auswahl: Verwende spezifizierten Host oder Standard-Host
-    const hostname = useHost || OPNSENSE_CONFIG.host;
-    console.log(`🔗 OPNsense API-Anfrage an: ${hostname}/${endpoint} (${method}, Versuch ${retryCount + 1})`);
-    
-    // Promise-basierte HTTPS-Anfrage mit umfassendem Error Handling
-    return new Promise((resolve, reject) => {
-      // HTTPS-Request-Optionen mit Security-Einstellungen
-      const options = {
-        hostname: hostname,
-        port: 443,                                    // HTTPS-Standard-Port
-        path: `/api/${endpoint}`,                     // API-Pfad
-        method: method,
-        headers: {
-          'Authorization': `Basic ${auth}`,           // Basic Auth Header
-          'Content-Type': 'application/json',        // JSON Content-Type
-          'User-Agent': 'HNEE-ServicePortal/2.0',    // Custom User Agent
-          'Connection': 'close',                      // Schließe Verbindung nach Request
-          'Cache-Control': 'no-cache',               // Keine Cache-Nutzung
-          'Accept': 'application/json'               // Erwarte JSON-Antwort
-        },
-        timeout: OPNSENSE_CONFIG.timeout,            // Request-Timeout
-        rejectUnauthorized: false,                   // Selbstsignierte Zertifikate erlauben
-        secureProtocol: 'TLSv1_2_method',           // TLS 1.2 erzwingen
-        // Sichere Cipher-Suites definieren
-        ciphers: 'ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA',
-        checkServerIdentity: () => undefined,        // Server-Identität nicht prüfen (für interne APIs)
-        keepAlive: false,                            // Keine persistenten Verbindungen
-        maxSockets: 1,                               // Maximal 1 Socket gleichzeitig
-        family: 4                                    // IPv4 erzwingen
-      };
-
-      // HTTP-Request erstellen
-      const req = https.request(options, (res) => {
-        let data = '';
-
-        // Daten sammeln (Response kann in mehreren Chunks kommen)
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-
-        // Response vollständig empfangen
-        res.on('end', () => {
-          try {
-            // Prüfe HTTP-Status-Code
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              const jsonData = JSON.parse(data);
-              console.log(`✅ OPNsense API-Anfrage erfolgreich (${res.statusCode})`);
-              circuitBreaker.recordSuccess();  // Erfolg an Circuit Breaker melden
-              resolve(jsonData);
-            } else {
-              throw new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`);
-            }
-          } catch (parseError) {
-            console.error('JSON Parse Error:', parseError.message);
-            circuitBreaker.recordFailure();    // Fehler an Circuit Breaker melden
-            reject(parseError);
-          }
-        });
-      });
-
-      // Socket-Timeout-Handling
-      req.on('socket', (socket) => {
-        socket.setTimeout(OPNSENSE_CONFIG.timeout);
-        socket.on('timeout', () => {
-          console.log(`⏰ Socket timeout after ${OPNSENSE_CONFIG.timeout}ms`);
-          req.destroy();  // Verbindung beenden
-        });
-      });
-
-      // Request-Error-Handling mit intelligenter Retry-Logik
-      req.on('error', (error) => {
-        console.error(`❌ OPNsense API-Anfrage fehlgeschlagen (Versuch ${retryCount + 1}):`, error.message);
-        
-        circuitBreaker.recordFailure();  // Fehler an Circuit Breaker melden
-        
-        // Liste der wiederholbaren Fehlertypen
-        const retryableErrors = [
-          'ECONNRESET',     // Verbindung zurückgesetzt
-          'ETIMEDOUT',      // Timeout
-          'ENOTFOUND',      // Host nicht gefunden
-          'ECONNREFUSED',   // Verbindung abgelehnt
-          'EHOSTUNREACH',   // Host nicht erreichbar
-          'ENETUNREACH',    // Netzwerk nicht erreichbar
-          'socket hang up'  // Socket-Verbindung abgebrochen
-        ];
-        
-        // Prüfe ob Retry sinnvoll ist
-        const shouldRetry = retryableErrors.some(errType => 
-          error.code === errType || error.message.includes(errType)
-        ) && retryCount < OPNSENSE_CONFIG.retries;
-        
-        if (shouldRetry) {
-          // Exponentieller Backoff: 2s, 4s, 6s...
-          const backoffTime = 2000 * (retryCount + 1);
-          console.log(`🔄 Wiederhole OPNsense API-Anfrage in ${backoffTime}ms (${retryCount + 1}/${OPNSENSE_CONFIG.retries})`);
-          
-          // Fallback-Host bei Socket-Problemen verwenden
-          let nextHost = useHost;
-          if (error.message.includes('socket hang up') && !useHost && OPNSENSE_CONFIG.fallbackHost) {
-            nextHost = OPNSENSE_CONFIG.fallbackHost;
-            console.log(`🔄 Verwende Fallback-Host für nächsten Versuch: ${nextHost}`);
-          }
-          
-          // Verzögerter Retry
-          setTimeout(() => {
-            opnsenseRequest(endpoint, method, retryCount + 1, nextHost).then(resolve).catch(reject);
-          }, backoffTime);
-        } else {
-          // Detaillierte Fehlermeldungen für häufige Probleme
-          if (error.message.includes('socket hang up')) {
-            console.warn('🚫 Socket hang up - Server hat Verbindung abgebrochen. Möglicherweise Firewall oder Proxy-Problem');
-          } else if (error.code === 'ECONNREFUSED') {
-            console.warn('🚫 Verbindung abgelehnt - API-Service läuft möglicherweise nicht');
-          } else if (error.code === 'EHOSTUNREACH') {
-            console.warn('🚫 Host nicht erreichbar - Netzwerk-Routing-Problem');
-          }
-          reject(error);
-        }
-      });
-
-      // Request-Timeout-Handling mit Fallback-Logic
-      req.on('timeout', () => {
-        console.log(`⏰ Request timeout after ${OPNSENSE_CONFIG.timeout}ms - möglicherweise API nicht erreichbar`);
-        req.destroy();  // Request beenden
-        
-        circuitBreaker.recordFailure();  // Timeout als Fehler behandeln
-        
-        // Fallback-Host bei Timeout versuchen (falls verfügbar und noch nicht verwendet)
-        if (retryCount < OPNSENSE_CONFIG.retries && !useHost && OPNSENSE_CONFIG.fallbackHost) {
-          console.log(`🔄 Timeout - versuche Fallback-Host: ${OPNSENSE_CONFIG.fallbackHost}`);
-          setTimeout(() => {
-            opnsenseRequest(endpoint, method, retryCount + 1, OPNSENSE_CONFIG.fallbackHost).then(resolve).catch(reject);
-          }, 1000);
-        } else {
-          reject(new Error('OPNsense API timeout - Service möglicherweise nicht verfügbar'));
-        }
-      });
-
-      // Request-Body für POST-Requests senden
-      if (method === 'POST') {
-        req.write(JSON.stringify({}));  // Leerer JSON-Body für OPNsense API
-      }
-      
-      req.end();  // Request abschließen und senden
-    });
-  } catch (error) {
-    console.error(`❌ OPNsense API-Anfrage Setup-Fehler:`, error.message);
-    return null;
-  }
 };
 
 // ===== LDAP-STATISTIK-FUNKTIONEN =====
@@ -784,40 +578,50 @@ const getUserStatistics = async () => {
  */
 const checkServerConnectivity = async () => {
   try {
-    // Dynamische Module-Imports für bessere Performance
+    console.log('🏓 Prüfe Server-Konnektivität zu vpn.hnee.de (10.1.1.48)...');
+    
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
     
-    console.log('🏓 Prüfe Server-Konnektivität mit ICMP-Ping...');
-    
-    // Ping-Kommando mit optimierten Parametern:
-    // -c 1: Nur ein Ping-Paket senden (schnell)
-    // -W 1000: 1 Sekunde Timeout pro Paket
-    const { stdout, stderr } = await execAsync('ping -c 1 -W 1000 vpn.hnee.de', { 
-      timeout: 3000  // Gesamttimeout für den Prozess
-    });
-    
-    // Parse der Ping-Ausgabe für Erfolgs-/Fehleranalyse
-    // Regex erfasst: "X packets transmitted, Y received"
-    const successMatch = stdout.match(/(\d+) packets? transmitted, (\d+) (?:packets? )?received/);
-    
-    if (successMatch) {
-      const [, transmitted, received] = successMatch;
-      const isReachable = parseInt(received) > 0;  // Mindestens ein Paket erhalten
+    // Versuche erst Hostname, dann IP als Fallback
+    try {
+      const { stdout } = await execAsync('ping -c 1 -W 2000 vpn.hnee.de', { 
+        timeout: 5000
+      });
       
-      console.log(`🏓 Ping-Ergebnis: ${received}/${transmitted} Pakete erhalten (${isReachable ? 'ERREICHBAR' : 'NICHT ERREICHBAR'})`);
-      return isReachable;
+      const successMatch = stdout.match(/(\d+) packets? transmitted, (\d+) (?:packets? )?received/);
+      if (successMatch) {
+        const [, transmitted, received] = successMatch;
+        const isReachable = parseInt(received) > 0;
+        console.log(`🏓 VPN-Server (Hostname): ${received}/${transmitted} Pakete erhalten (${isReachable ? 'ERREICHBAR' : 'NICHT ERREICHBAR'})`);
+        return isReachable;
+      }
+    } catch (hostnameError) {
+      console.log('🔄 Hostname-Ping fehlgeschlagen, versuche IP 10.1.1.48...');
+      
+      try {
+        const { stdout } = await execAsync('ping -c 1 -W 2000 10.1.1.48', { 
+          timeout: 5000
+        });
+        
+        const successMatch = stdout.match(/(\d+) packets? transmitted, (\d+) (?:packets? )?received/);
+        if (successMatch) {
+          const [, transmitted, received] = successMatch;
+          const isReachable = parseInt(received) > 0;
+          console.log(`🏓 VPN-Server (IP): ${received}/${transmitted} Pakete erhalten (${isReachable ? 'ERREICHBAR' : 'NICHT ERREICHBAR'})`);
+          return isReachable;
+        }
+      } catch (ipError) {
+        console.log('🏓 Sowohl Hostname als auch IP nicht erreichbar');
+      }
     }
     
-    // Fallback wenn Ping-Format unbekannt
-    console.log('🏓 Ping fehlgeschlagen - unbekanntes Antwortformat');
     return false;
     
   } catch (error) {
-    // Umfassende Fehlerbehandlung für verschiedene Ping-Probleme
-    console.error('🏓 Server-Konnektivitätsprüfung fehlgeschlagen:', error.message);
-    return false;  // Bei Fehlern als nicht erreichbar markieren
+    console.log('🏓 VPN-Server Konnektivität: Fehler -', error.message);
+    return false;
   }
 };
 
@@ -837,77 +641,43 @@ const checkServerConnectivity = async () => {
  */
 const checkWireGuardService = async () => {
   try {
-    // Dynamische Module-Imports
+    console.log('🔌 Prüfe WireGuard-Service auf Port 51820...');
+    
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
     const execAsync = promisify(exec);
     
-    console.log('🔌 Prüfe WireGuard-Service auf Port 51820...');
+    // Versuche erst Hostname, dann IP
+    const targets = ['vpn.hnee.de', '10.1.1.48'];
     
-    // ===== STRATEGIE 1: NETCAT (NC) =====
-    // Schnellste Methode für UDP-Port-Tests
-    try {
-      // netcat mit UDP-Mode (-u), Zero-I/O-Mode (-z), verbose (-v)
-      const { stdout, stderr } = await execAsync('timeout 3 nc -u -z -v vpn.hnee.de 51820 2>&1', { 
-        timeout: 5000,      // 5 Sekunden Gesamttimeout
-        encoding: 'utf8'    // String-Ausgabe statt Buffer
-      });
-      
-      // Parsing der netcat-Ausgabe (stdout + stderr kombinieren)
-      const output = (stdout + stderr).toLowerCase();
-      
-      // Erfolgs-Keywords die netcat für offene UDP-Ports verwendet
-      if (output.includes('succeeded') || output.includes('open') || output.includes('connected')) {
-        console.log('🔌 WireGuard-Port ist erreichbar (netcat)');
-        return true;
+    for (const target of targets) {
+      try {
+        console.log(`🔌 Teste WireGuard-Port auf ${target}:51820...`);
+        const { stdout, stderr } = await execAsync(`timeout 3 nc -u -z -v ${target} 51820 2>&1`, { 
+          timeout: 5000,
+          encoding: 'utf8'
+        });
+        
+        const output = (stdout + stderr).toLowerCase();
+        
+        if (output.includes('succeeded') || output.includes('open') || output.includes('connected')) {
+          console.log(`🔌 WireGuard-Port 51820 ist erreichbar auf ${target}`);
+          return true;
+        }
+        
+        console.log(`🔌 WireGuard-Port 51820 nicht erreichbar auf ${target}`);
+        
+      } catch (error) {
+        console.log(`🔌 WireGuard-Port-Prüfung auf ${target} fehlgeschlagen:`, error.message);
       }
-    } catch (ncError) {
-      console.log('🔌 Netcat-Prüfung fehlgeschlagen, verwende Fallback-Methode nmap...');
     }
     
-    // ===== STRATEGIE 2: NMAP =====
-    // Detaillierterer Port-Scanner als Fallback
-    try {
-      // nmap mit UDP-Scan (-sU) für spezifischen Port
-      const { stdout: nmapOut } = await execAsync('nmap -sU -p 51820 vpn.hnee.de 2>/dev/null | grep "51820"', { 
-        timeout: 8000,      // Längerer Timeout da nmap langsamer
-        encoding: 'utf8'
-      });
-      
-      // nmap zeigt UDP-Ports als "open" oder "filtered" (oft hinter Firewall)
-      if (nmapOut && (nmapOut.includes('open') || nmapOut.includes('filtered'))) {
-        console.log('🔌 WireGuard-Port ist erreichbar (nmap)');
-        return true;
-      }
-    } catch (nmapError) {
-      console.log('🔌 Nmap-Prüfung fehlgeschlagen, verwende direkte UDP-Verbindung...');
-    }
-    
-    // ===== STRATEGIE 3: DIREKTE UDP-VERBINDUNG =====
-    // Letzter Fallback: Direkte Datenübertragung
-    try {
-      // Sende Testdaten an UDP-Port (WireGuard ignoriert invalide Pakete)
-      const { stdout: directOut } = await execAsync('timeout 2 bash -c "echo test | nc -u -w1 vpn.hnee.de 51820" 2>&1', { 
-        timeout: 4000,      // Timeout für direkte Verbindung
-        encoding: 'utf8'
-      });
-      
-      // Erfolg wenn Kommando ohne Fehler ausgeführt wurde
-      console.log('🔌 WireGuard-Port-Prüfung über direkte UDP-Verbindung erfolgreich');
-      return true;
-      
-    } catch (directError) {
-      console.log('🔌 Direkte UDP-Verbindung fehlgeschlagen');
-    }
-    
-    // ===== ALLE METHODEN FEHLGESCHLAGEN =====
-    console.log('🔌 Alle WireGuard-Port-Prüfmethoden fehlgeschlagen - Service möglicherweise nicht verfügbar');
+    console.log('🔌 WireGuard-Port 51820 auf allen Zielen nicht erreichbar');
     return false;
     
   } catch (error) {
-    // Globale Fehlerbehandlung für unerwartete Probleme
-    console.log('🔌 WireGuard-Service-Prüfung - unerwarteter Fehler:', error.message);
-    return false;  // Sicherheitshalber als nicht verfügbar markieren
+    console.log('🔌 WireGuard-Service-Prüfung - Fehler:', error.message);
+    return false;
   }
 };
 
@@ -958,31 +728,11 @@ const getVPNPeerStatistics = async () => {
       };
     }
 
-    // ===== OPNSENSE API-KONFIGURATIONSPRÜFUNG =====
-    if (!OPNSENSE_CONFIG.apiKey || !OPNSENSE_CONFIG.apiSecret) {
-      console.warn('🚫 OPNsense API-Anmeldedaten nicht konfiguriert - verwende Port-basierte Prüfung');
-      
-      // Fallback: WireGuard-Service-Port prüfen ohne API
-      const serviceRunning = await checkWireGuardService();
-      
-      return {
-        totalPeers: 0,                                    // Keine API-Daten verfügbar
-        connectedPeers: 0,                                // Keine API-Daten verfügbar
-        newPeersToday: 0,                                 // Keine API-Daten verfügbar
-        newPeersThisWeek: 0,                              // Keine API-Daten verfügbar
-        serverReachable: true,                            // Server ist erreichbar
-        serviceRunning: serviceRunning,                   // Port-basierte Service-Prüfung
-        serverStatus: serviceRunning ? 'no-api-configured' : 'service-down',
-        lastChecked: new Date().toISOString(),
-        dataSource: 'port-check-only',                    // Nur Port-Prüfung, keine API
-        warning: 'OPNsense API nicht konfiguriert - nur Port-basierte Prüfung möglich'
-      };
-    }
-    
     // ===== OPNSENSE API-SERVICE-STATUS ABRUFEN =====
     
-    // Verwende Circuit Breaker für resiliente API-Calls
-    const serviceStatus = await opnsenseRequest('wireguard/service/status', 'GET');
+    // Verwende zentrale OPNsense API für resiliente API-Calls
+    const opnsenseAPI = getOPNsenseAPI();
+    const serviceStatus = await opnsenseAPI.getStatus().catch(() => null);
     
     if (!serviceStatus) {
       console.warn('🚫 OPNsense API nicht verfügbar - verwende Fallback-Prüfung');
@@ -1021,9 +771,9 @@ const getVPNPeerStatistics = async () => {
       // ===== CLIENT-INFORMATIONEN ABRUFEN =====
       
       // OPNsense Client-Datenbank abfragen
-      const clientInfo = await opnsenseRequest('wireguard/client/search_client', 'POST');
+      const clientInfo = await opnsenseAPI.getClients().catch(() => null);
       
-      if (clientInfo && clientInfo.rows) {
+      if (clientInfo && clientInfo.length > 0) {
         // ===== ZEITBERECHNUNGEN FÜR NEUE PEERS =====
         
         const now = new Date();
@@ -1031,12 +781,12 @@ const getVPNPeerStatistics = async () => {
         const weekAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));   // Vor 7 Tagen
         
         // Gesamtzahl der konfigurierten Clients
-        totalPeers = clientInfo.rows.length;
+        totalPeers = clientInfo.length;
         console.log(`📊 Gefundene Client-Peers: ${totalPeers}`);
         
         // ===== CLIENT-DATEN ANALYSIEREN =====
         
-        clientInfo.rows.forEach(client => {
+        clientInfo.forEach(client => {
           // Verbundene Clients identifizieren (verschiedene API-Formate berücksichtigen)
           if (client.connected === '1' || client.connected === true || client.status === 'connected') {
             connectedPeers++;
@@ -1066,13 +816,13 @@ const getVPNPeerStatistics = async () => {
       // ===== SERVER-INFORMATIONEN ABRUFEN =====
       
       // OPNsense Server-Konfiguration abfragen (für Server-zu-Server-Verbindungen)
-      const serverInfo = await opnsenseRequest('wireguard/server/search_server', 'POST');
+      const serverInfo = await opnsenseAPI.getServerInfo().catch(() => null);
       
-      if (serverInfo && serverInfo.rows) {
-        console.log(`📊 Gefundene Server-Konfigurationen: ${serverInfo.rows.length}`);
+      if (serverInfo && serverInfo.length > 0) {
+        console.log(`📊 Gefundene Server-Konfigurationen: ${serverInfo.length}`);
         
         // Server-Peers zu Gesamtstatistik hinzufügen
-        serverInfo.rows.forEach(server => {
+        serverInfo.forEach(server => {
           if (server.peers && Array.isArray(server.peers)) {
             totalPeers += server.peers.length;
             
@@ -1116,8 +866,8 @@ const getVPNPeerStatistics = async () => {
       dataSource: 'opnsense-api',                         // Datenquelle: OPNsense API
       serviceInfo: serviceStatus,                         // Rohe Service-Informationen
       details: {
-        clientPeers: totalPeers - (serverInfo?.rows?.reduce((acc, server) => acc + (server.peers?.length || 0), 0) || 0),
-        serverPeers: serverInfo?.rows?.reduce((acc, server) => acc + (server.peers?.length || 0), 0) || 0
+        clientPeers: totalPeers - (serverInfo?.reduce((acc, server) => acc + (server.peers?.length || 0), 0) || 0),
+        serverPeers: serverInfo?.reduce((acc, server) => acc + (server.peers?.length || 0), 0) || 0
       }
     };
 
@@ -1229,12 +979,6 @@ const getPortalStats = async (req, res) => {
     // ===== ERFOLGS-LOGGING =====
     
     console.log(`✅ Portal-Statistiken erfolgreich abgerufen: ${userStats.totalRegistered} LDAP-Benutzer (${userStats.newUsersThisMonth} neu diesen Monat), ${vpnPeerStats.totalPeers} VPN-Peers (${vpnPeerStats.connectedPeers} verbunden, ${vpnPeerStats.newPeersToday} neu heute)`);
-    
-    // ===== KONFIGURATIONSWARNUNGEN =====
-    
-    if (!OPNSENSE_CONFIG.apiKey || !OPNSENSE_CONFIG.apiSecret) {
-      console.warn('⚠️  OPNsense API-Anmeldedaten nicht konfiguriert - VPN-Statistiken sind limitiert auf Port-basierte Prüfungen');
-    }
     
     // ===== SICHERHEITS-AUDIT-LOGGING =====
     
@@ -1372,7 +1116,8 @@ const getHealthStatus = async (req, res) => {
       console.log('🔍 Prüfe OPNsense API...');
       const circuitStatus = circuitBreaker.getStatus();
       
-      if (OPNSENSE_CONFIG.apiKey && OPNSENSE_CONFIG.apiSecret) {
+      try {
+        const opnsenseAPI = getOPNsenseAPI();
         if (circuitStatus.isOpen) {
           healthStatus.services.opnsenseApi = {
             status: 'degraded',
@@ -1382,15 +1127,7 @@ const getHealthStatus = async (req, res) => {
             apiType: 'wireguard'
           };
         } else {
-          const originalTimeout = OPNSENSE_CONFIG.timeout;
-          const originalRetries = OPNSENSE_CONFIG.retries;
-          OPNSENSE_CONFIG.timeout = 5000;
-          OPNSENSE_CONFIG.retries = 1;
-          
-          const apiTest = await opnsenseRequest('wireguard/service/status', 'GET');
-          
-          OPNSENSE_CONFIG.timeout = originalTimeout;
-          OPNSENSE_CONFIG.retries = originalRetries;
+          const apiTest = await opnsenseAPI.getStatus().catch(() => null);
           
           healthStatus.services.opnsenseApi = {
             status: apiTest ? 'healthy' : 'degraded',
@@ -1400,7 +1137,7 @@ const getHealthStatus = async (req, res) => {
             apiType: 'wireguard'
           };
         }
-      } else {
+      } catch (configError) {
         healthStatus.services.opnsenseApi = {
           status: 'not-configured',
           configured: false,
@@ -1412,7 +1149,7 @@ const getHealthStatus = async (req, res) => {
       healthStatus.services.opnsenseApi = {
         status: 'unhealthy',
         error: apiError.message,
-        configured: Boolean(OPNSENSE_CONFIG.apiKey && OPNSENSE_CONFIG.apiSecret),
+        configured: false,
         circuitBreaker: circuitBreaker.getStatus()
       };
     }
@@ -1455,18 +1192,19 @@ const getCircuitBreakerStatus = async (req, res) => {
   try {
     const status = circuitBreaker.getStatus();
     const serverReachable = await checkServerConnectivity();
+    const opnsenseAPI = getOPNsenseAPI();
     
     res.json({
       circuitBreaker: status,
       serverStatus: {
         reachable: serverReachable,
-        host: OPNSENSE_CONFIG.host,
-        fallbackHost: OPNSENSE_CONFIG.fallbackHost
+        host: opnsenseAPI.host,
+        fallbackHost: opnsenseAPI.fallbackHost || 'Nicht konfiguriert'
       },
       apiConfiguration: {
-        configured: Boolean(OPNSENSE_CONFIG.apiKey && OPNSENSE_CONFIG.apiSecret),
-        timeout: OPNSENSE_CONFIG.timeout,
-        retries: OPNSENSE_CONFIG.retries
+        configured: Boolean(opnsenseAPI.apiKey && opnsenseAPI.apiSecret),
+        timeout: opnsenseAPI.timeout || 10000,
+        retries: opnsenseAPI.retries || 3
       },
       timestamp: new Date().toISOString()
     });
@@ -1524,11 +1262,13 @@ const getWireGuardConfig = async (req, res) => {
       timestamp: new Date().toISOString()
     };
     
+    const opnsenseAPI = getOPNsenseAPI();
+    
     const [generalInfo, serverInfo, clientInfo, serviceInfo] = await Promise.all([
-      opnsenseRequest('wireguard/general/get', 'GET').catch(() => null),
-      opnsenseRequest('wireguard/server/search_server', 'POST').catch(() => null),
-      opnsenseRequest('wireguard/client/search_client', 'POST').catch(() => null),
-      opnsenseRequest('wireguard/service/status', 'GET').catch(() => null)
+      opnsenseAPI.request('/general/get', 'GET').catch(() => null),
+      opnsenseAPI.getServerInfo().catch(() => null),
+      opnsenseAPI.getClients().catch(() => null),
+      opnsenseAPI.getStatus().catch(() => null)
     ]);
     
     config.general = generalInfo;
