@@ -126,12 +126,27 @@ const getNextAvailableIP = async () => {
  */
 const getUserVPNFiles = async (username) => {
   try {
-    console.log(`🔍 Lade VPN-Peers für Benutzer: ${username}`);
+    console.log(`\n🔍 DEBUG: getUserVPNFiles called for user: ${username}`);
+    console.log(`🔍 DEBUG: Environment check:`);
+    console.log(`  - OPNSENSE_HOST: ${process.env.OPNSENSE_HOST}`);
+    console.log(`  - OPNSENSE_TIMEOUT: ${process.env.OPNSENSE_TIMEOUT}`);
+    console.log(`  - Working directory: ${process.cwd()}`);
     
     const opnsense = getOPNsenseAPI();
+    console.log(`🔧 DEBUG: OPNsense instance details:`);
+    console.log(`  - host: ${opnsense.host}`);
+    console.log(`  - configured: ${opnsense.configured}`);
+    console.log(`  - timeout: ${opnsense.timeout}`);
+    
+    console.log(`🔍 DEBUG: Calling opnsense.getClients()...`);
     const allClients = await opnsense.getClients();
     
-    console.log(`📊 Gefundene Clients insgesamt: ${allClients.length}`);
+    console.log(`📊 DEBUG: OPNsense API returned ${allClients.length} clients`);
+    console.log(`📊 DEBUG: First few clients:`, allClients.slice(0, 3).map(c => ({
+      name: c.name,
+      uuid: c.uuid,
+      enabled: c.enabled
+    })));
     
     // Filter nur Clients des aktuellen Benutzers (username-*)
     const pattern = `${username}-`;
@@ -139,7 +154,9 @@ const getUserVPNFiles = async (username) => {
       client.name && client.name.toLowerCase().startsWith(pattern.toLowerCase())
     );
     
-    console.log(`👤 Gefundene Clients für ${username}: ${userClients.length}`);
+    console.log(`👤 DEBUG: Found ${userClients.length} clients for ${username} with pattern "${pattern}"`);
+    console.log(`👤 DEBUG: User clients:`, userClients.map(c => c.name));
+    console.log(`🔍 DEBUG: getUserVPNFiles completed\n`);
     
     const connections = [];
     for (const client of userClients) {
