@@ -34,7 +34,7 @@ class OPNsenseAPI {
     this.apiSecret = process.env.OPNSENSE_API_SECRET;
     this.baseUrl = `https://${this.host}:${this.port}`;
     this.currentHost = this.host; // Aktuell verwendeter Host
-    this.timeout = process.env.OPNSENSE_TIMEOUT || 5000; // 5 Sekunden für realen Server
+    this.timeout = parseInt(process.env.OPNSENSE_TIMEOUT) || 10000; // Erhöht auf 10 Sekunden
     this.retries = 3;
     
     // TLS-Optionen für selbstsignierte Zertifikate (OPNsense Standard)

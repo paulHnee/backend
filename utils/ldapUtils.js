@@ -223,14 +223,19 @@ export const searchGroups = async (searchPattern = '*') => {
         return reject(err);
       }
 
-      // Verbesserte Suche nach Gruppen mit mehreren objektklassen
-      const searchFilter = `(|(objectClass=group)(objectClass=groupOfNames)(objectClass=posixGroup)(objectClass=organizationalUnit))`;
+      // Erweiterte Suche nach Gruppen mit Debug-Logging
+      console.log(`🔍 LDAP Gruppensuche mit Base: ${process.env.LDAP_SEARCH_BASE}`);
+      
+      // Einfacherer Filter für bessere Kompatibilität
+      const searchFilter = `(|(objectClass=group)(objectClass=organizationalUnit))`;
       const searchOptions = {
         scope: 'sub',
         filter: searchFilter,
-        attributes: ['cn', 'name', 'description', 'member', 'memberOf', 'members', 'objectClass', 'ou'],
-        sizeLimit: 100 // Begrenze Ergebnisse zur Performance
+        attributes: ['cn', 'name', 'sAMAccountName', 'description', 'member', 'memberOf', 'members', 'objectClass', 'ou', 'dn'],
+        sizeLimit: 50 // Reduzierte Grenze um Size Limit Exceeded zu vermeiden
       };
+      
+      console.log(`🔧 LDAP Filter: ${searchFilter}`);
 
       client.search(process.env.LDAP_SEARCH_BASE, searchOptions, (err, searchRes) => {
         if (err) {
@@ -242,17 +247,54 @@ export const searchGroups = async (searchPattern = '*') => {
 
         searchRes.on('searchEntry', (entry) => {
           try {
-            const attributes = entry.object || entry.attributes;
+            // LDAPJS-kompatible Attribut-Extraktion - verschiedene Ansätze versuchen
+            let attributes = null;
+            
+            // Methode 1: Direkte Attribute-Zugriff (moderne ldapjs)
+            if (entry.attributes && Array.isArray(entry.attributes)) {
+              attributes = {};
+              entry.attributes.forEach(attr => {
+                attributes[attr.type] = attr.values || attr._vals || [attr.value];
+              });
+            }
+            // Methode 2: .object property (ältere Versionen)
+            else if (entry.object) {
+              attributes = entry.object;
+            }
+            // Methode 3: .json() Methode falls verfügbar
+            else if (typeof entry.json === 'function') {
+              attributes = entry.json();
+            }
             
             // Debug-Logging für LDAP-Struktur
+            console.log(`🔍 LDAP Entry gefunden:`, {
+              dn: entry.dn ? entry.dn.toString() : 'undefined',
+              hasObject: !!entry.object,
+              hasAttributes: !!entry.attributes,
+              attributeKeys: attributes ? Object.keys(attributes) : 'none',
+              entryKeys: Object.keys(entry)
+            });
+            
             if (!attributes) {
-              console.warn('LDAP Entry ohne Attribute gefunden, überspringe...');
+              console.warn('LDAP Entry ohne verarbeitbare Attribute gefunden, überspringe...');
               return;
             }
             
-            // Alternative Attribut-Zugriffe versuchen
-            const groupName = attributes.cn || attributes.name || attributes.sAMAccountName || 'Unbekannt';
-            const description = attributes.description || attributes.info || '';
+            // Sichere Attribut-Extraktion - verschiedene LDAP-Server-Typen berücksichtigen
+            const getValue = (attr) => {
+              if (Array.isArray(attr)) {
+                return attr[0]; // Erstes Element bei Arrays
+              }
+              return attr;
+            };
+            
+            const groupName = getValue(attributes.cn) || 
+                             getValue(attributes.name) || 
+                             getValue(attributes.sAMAccountName) || 
+                             getValue(attributes.ou) || 
+                             (entry.dn ? entry.dn.toString().split(',')[0].replace(/^(cn|ou)=/i, '') : 'Unbekannt');
+            
+            const description = getValue(attributes.description) || getValue(attributes.info) || '';
             
             // Sichere Behandlung der member-Attribute mit verschiedenen Formaten
             let memberCount = 0;
@@ -264,15 +306,23 @@ export const searchGroups = async (searchPattern = '*') => {
               memberCount = Array.isArray(attributes.members) ? attributes.members.length : 1;
             }
 
-            // Nur Gruppen mit gültigen Namen hinzufügen
-            if (groupName !== 'Unbekannt') {
+            // Objektklasse bestimmen
+            const objectClass = attributes.objectClass || [];
+            const isOU = Array.isArray(objectClass) ? 
+                        objectClass.some(cls => (cls || '').toLowerCase().includes('organizationalunit')) :
+                        ((objectClass || '').toLowerCase().includes('organizationalunit'));
+
+            // Alle LDAP-Einträge mit gültigen Namen hinzufügen (auch OUs)
+            if (groupName !== 'Unbekannt' && groupName && groupName.trim()) {
               groups.push({
-                name: groupName,
+                name: groupName.trim(),
                 description: description,
                 memberCount: memberCount,
-                dn: entry.dn || 'unknown'
+                dn: entry.dn ? entry.dn.toString() : 'unknown',
+                objectClass: objectClass,
+                type: isOU ? 'OU' : 'Group'
               });
-              console.log(`📋 Gefundene Gruppe: ${groupName} (${memberCount} Mitglieder)`);
+              console.log(`📋 Gefundene ${isOU ? 'OU' : 'Gruppe'}: ${groupName.trim()} (${memberCount} Mitglieder)`);
             }
           } catch (parseError) {
             console.warn('Fehler beim Parsen der LDAP-Gruppe:', parseError.message);
