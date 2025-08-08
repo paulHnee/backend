@@ -20,6 +20,7 @@
 
 import ldapjs from 'ldapjs';
 import { isUserInGroup, getGroupMembers, searchGroups } from '../utils/ldapUtils.js';
+import { getUsersFromOU } from '../utils/ldapOUUtils.js';
 import { logSecurityEvent } from '../utils/securityLogger.js';
 import ldapAuth from '../config/ldap.js';
 import { getOPNsenseAPI } from '../config/opnsense.js';
@@ -150,30 +151,28 @@ let serviceStatus = {
  */
 const getUserStatisticsWithLdapUtils = async () => {
   try {
-    console.log('📊 Rufe LDAP-Benutzerstatistiken mit ldapUtils ab...');
     
     // Definiere Gruppenmuster für verschiedene Benutzertypen
     // Diese Muster werden für die intelligente Gruppenerkennung verwendet
-    const studentenGroups = ['Studenten', 'Studierende', 'studenten'];           // Studenten-Identifikatoren
-    const angestellteGroups = ['Angestellte', 'Mitarbeiter', 'Beschaeftigte', 'mitarbeiter']; // Angestellte-Identifikatoren
-    const gastdozentenGroups = ['Gastdozenten', 'GastDozenten', 'gastdozenten']; // Gastdozenten-Identifikatoren
-    const itszGroups = ['ITSZadmins', 'IT-Mitarbeiter', 'itsz'];                // ITSZ-Team-Identifikatoren
+    const studentenGroups = ['Studenten', 'Studierende', 'studenten', 'student'];           // Studenten-Identifikatoren
+    const angestellteGroups = ['Angestellte', 'Mitarbeiter', 'Beschaeftigte', 'mitarbeiter', 'personal', 'wissenschaftliche', 'WissenschaftlicheMitarbeiter', 'wissenschaftlich']; // Angestellte-Identifikatoren (inkl. wissenschaftliche)
+    const gastdozentenGroups = ['Gastdozenten', 'GastDozenten', 'gastdozenten', 'dozent']; // Gastdozenten-Identifikatoren
+    const itszGroups = ['ITSZadmins', 'IT-Mitarbeiter', 'itsz', 'ITSZ'];                // ITSZ-Team-Identifikatoren
     
     // Zähler für verschiedene Benutzertypen initialisieren
     let totalStudenten = 0;
     let totalAngestellte = 0;
+    let totalWissenschaftliche = 0;
     let totalGastdozenten = 0;
     let totalITSZ = 0;
     
     // STRATEGIE 1: Moderne Gruppensuche mit searchGroups() von ldapUtils
     try {
       const allGroups = await searchGroups('*');  // Suche alle Gruppen im LDAP
-      console.log(`🔍 Gefundene LDAP-Gruppen: ${allGroups.length}`);
       
       // Wenn keine Gruppen gefunden wurden, aber wir wissen dass LDAP funktioniert,
       // verwende direkte OU-basierte Schätzung
       if (allGroups.length === 0) {
-        console.log('⚠️ Keine LDAP-Gruppen gefunden, verwende OU-basierte Schätzung...');
         throw new Error('Keine Gruppen über searchGroups gefunden - verwende Fallback');
       }
       
@@ -184,65 +183,55 @@ const getUserStatisticsWithLdapUtils = async () => {
         // Studenten-Gruppen identifizieren und zählen
         if (studentenGroups.some(sg => groupNameLower.includes(sg.toLowerCase()))) {
           totalStudenten += group.memberCount || 0;
-          console.log(`📚 Studenten-Gruppe ${group.name}: ${group.memberCount} Mitglieder`);
         }
         
-        // Angestellte-Gruppen identifizieren und zählen
+        // Angestellte-Gruppen identifizieren und zählen (inkl. alle Mitarbeitertypen)
         if (angestellteGroups.some(ag => groupNameLower.includes(ag.toLowerCase()))) {
           totalAngestellte += group.memberCount || 0;
-          console.log(`👥 Angestellte-Gruppe ${group.name}: ${group.memberCount} Mitglieder`);
+          // Wissenschaftliche Mitarbeiter separat zählen für Tracking
+          if (groupNameLower.includes('wissenschaftlich')) {
+            totalWissenschaftliche += group.memberCount || 0;
+          }
         }
         
         // Gastdozenten-Gruppen identifizieren und zählen
         if (gastdozentenGroups.some(gg => groupNameLower.includes(gg.toLowerCase()))) {
           totalGastdozenten += group.memberCount || 0;
-          console.log(`🎓 Gastdozenten-Gruppe ${group.name}: ${group.memberCount} Mitglieder`);
         }
         
         // ITSZ-Gruppen identifizieren und zählen
         if (itszGroups.some(ig => groupNameLower.includes(ig.toLowerCase()))) {
           totalITSZ += group.memberCount || 0;
-          console.log(`🖥️ ITSZ-Gruppe ${group.name}: ${group.memberCount} Mitglieder`);
         }
       }
       
-    } catch (groupError) {
-      console.warn('⚠️ Gruppensuche fehlgeschlagen, verwende Fallback-Methode:', groupError.message);
+      // ===== HYBRID APPROACH: USE WHAT WORKS BEST =====
       
-      // STRATEGIE 2: Direkte Gruppenmitglieder-Abfrage als Fallback
+      // Always use OU-based search for students (groups often return 0)
       try {
-        // Bekannte Gruppennamen direkt abfragen
-        for (const groupName of ['Studenten', 'Angestellte', 'Gastdozenten', 'ITSZadmins']) {
-          const members = await getGroupMembers(groupName);  // ldapUtils-Funktion
-          
-          // Mitgliederzahlen den entsprechenden Kategorien zuordnen
-          switch (groupName.toLowerCase()) {
-            case 'studenten':
-              totalStudenten = members.length;
-              break;
-            case 'angestellte':
-              totalAngestellte = members.length;
-              break;
-            case 'gastdozenten':
-              totalGastdozenten = members.length;
-              break;
-            case 'itszadmins':
-              totalITSZ = members.length;
-              break;
-          }
-          
-          console.log(`📋 Direkte Gruppenmitglieder ${groupName}: ${members.length}`);
-        }
-        
-        // Wenn immer noch keine Daten: Direkt OU-basierte Fallback verwenden
-        if (totalStudenten === 0 && totalAngestellte === 0 && totalGastdozenten === 0) {
-          console.log('⚠️ Auch direkte Gruppenmitglieder-Abfrage ergab 0 Ergebnisse, verwende OU-basierte Methode');
-          throw new Error('Keine Gruppenmitglieder gefunden - verwende OU-basierte Fallback');
-        }
-      } catch (directError) {
-        console.warn('⚠️ Direkte Gruppenmitglieder-Abfrage fehlgeschlagen:', directError.message);
-        
-        // STRATEGIE 3: Legacy OU-basierte Methode als finaler Fallback
+        const studentenFromOU = await getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten');
+        totalStudenten = studentenFromOU.length; // OU-based is more reliable for students
+      } catch (ouError) {
+        console.warn('⚠️ OU-basierte Studenten-Suche fehlgeschlagen:', ouError.message);
+      }
+      
+      // Always use OU-based search for employees to exclude _MS365 accounts
+      try {
+        const angestellteFromOU = await getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte');
+        console.log(`🔍 OU-basierte Angestellten-Suche: ${angestellteFromOU.length} gefunden`);
+        console.log(`🔍 Gruppen-basierte Angestellten-Suche: ${totalAngestellte} gefunden`);
+        totalAngestellte = angestellteFromOU.length; // Always use OU count to exclude _MS365
+        console.log(`🔄 Verwende OU-basierte Angestellten-Zählung: ${totalAngestellte} (ohne _MS365 accounts)`);
+      } catch (ouError) {
+        console.warn('⚠️ OU-basierte Angestellten-Suche fehlgeschlagen, verwende Gruppenzählung:', ouError.message);
+        // Keep group-based count as fallback
+      }
+      
+    } catch (groupError) {
+      console.warn('⚠️ Gruppensuche fehlgeschlagen, verwende OU-basierte Methode:', groupError.message);
+      
+      // FALLBACK: Pure OU-based approach
+      try {
         const [studentenUsers, angestellteUsers, gastdozentenUsers] = await Promise.all([
           getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(() => []),
           getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(() => []),
@@ -253,12 +242,17 @@ const getUserStatisticsWithLdapUtils = async () => {
         totalAngestellte = angestellteUsers.length;
         totalGastdozenten = gastdozentenUsers.length;
         
-        console.log('📂 Verwendete OU-basierte Fallback-Methode');
+      } catch (ouError) {
+        console.error('❌ Auch OU-basierte Suche fehlgeschlagen:', ouError.message);
+        // Keep any values we managed to get from groups
       }
     }
     
     // Gesamtzahl aller Benutzer berechnen
     const totalUsers = totalStudenten + totalAngestellte + totalGastdozenten + totalITSZ;
+    
+    // ===== FINAL MEMBER COUNT LOG =====
+    console.log(`✅ FINAL COUNT: ${totalUsers} total users - Studenten: ${totalStudenten}, Angestellte: ${totalAngestellte} (${totalWissenschaftliche} wissenschaftliche), Gastdozenten: ${totalGastdozenten}, ITSZ: ${totalITSZ}`);
     
     // ===== ZEITLICHE METRIKEN BERECHNEN =====
     
@@ -294,7 +288,7 @@ const getUserStatisticsWithLdapUtils = async () => {
       // Gruppierte Benutzerstatistiken
       groups: {
         studenten: totalStudenten,             // Anzahl Studenten
-        angestellte: totalAngestellte,         // Anzahl Angestellte
+        angestellte: totalAngestellte,         // Anzahl Angestellte (inkl. wissenschaftliche)
         gastdozenten: totalGastdozenten,       // Anzahl Gastdozenten
         mitarbeiter: totalAngestellte,         // Legacy-Kompatibilität (= Angestellte)
         dozenten: null,                        // Don't estimate - requires real data
@@ -372,7 +366,10 @@ const getUsersFromOU = async (ouPath, ouName) => {
       const client = ldapjs.createClient({
         url: process.env.LDAP_URL,    // LDAP-Server-URL aus Umgebungsvariable
         timeout: 10000,               // 10 Sekunden Verbindungs-Timeout
-        connectTimeout: 5000          // 5 Sekunden Connect-Timeout
+        connectTimeout: 5000,         // 5 Sekunden Connect-Timeout
+        tlsOptions: {
+          rejectUnauthorized: false   // Für Entwicklungsumgebungen - TLS-Zertifikate nicht streng prüfen
+        }
       });
 
       // Error-Handler für Client-Verbindungsfehler
@@ -483,7 +480,6 @@ const getUsersFromOU = async (ouPath, ouName) => {
           searchRes.on('end', () => {
             clearTimeout(searchTimeout);  // Timeout löschen
             client.destroy();  // Client-Ressourcen freigeben
-            console.log(`${users.length} Benutzer in OU ${ouName} gefunden`);
             resolve(users);    // Alle gefundenen Benutzer zurückgeben
           });
         });
@@ -513,7 +509,6 @@ const getUsersFromOU = async (ouPath, ouName) => {
  */
 const getUserStatistics = async () => {
   try {
-    console.log('📊 Rufe erweiterte Benutzerstatistiken ab...');
     
     // Verwende die neue LDAP-Utils-basierte Funktion für die eigentliche Arbeit
     return await getUserStatisticsWithLdapUtils();
@@ -562,7 +557,6 @@ const getUserStatistics = async () => {
  */
 const checkServerConnectivity = async () => {
   try {
-    console.log('🏓 Prüfe Server-Konnektivität zu vpn.hnee.de (10.1.1.48)...');
     
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
@@ -578,11 +572,9 @@ const checkServerConnectivity = async () => {
       if (successMatch) {
         const [, transmitted, received] = successMatch;
         const isReachable = parseInt(received) > 0;
-        console.log(`🏓 VPN-Server (Hostname): ${received}/${transmitted} Pakete erhalten (${isReachable ? 'ERREICHBAR' : 'NICHT ERREICHBAR'})`);
         return isReachable;
       }
     } catch (hostnameError) {
-      console.log('🔄 Hostname-Ping fehlgeschlagen, versuche IP 10.1.1.48...');
       
       try {
         const { stdout } = await execAsync('ping -c 1 -W 2000 10.1.1.48', { 
@@ -593,18 +585,16 @@ const checkServerConnectivity = async () => {
         if (successMatch) {
           const [, transmitted, received] = successMatch;
           const isReachable = parseInt(received) > 0;
-          console.log(`🏓 VPN-Server (IP): ${received}/${transmitted} Pakete erhalten (${isReachable ? 'ERREICHBAR' : 'NICHT ERREICHBAR'})`);
           return isReachable;
         }
       } catch (ipError) {
-        console.log('🏓 Sowohl Hostname als auch IP nicht erreichbar');
+        // IP ist auch nicht erreichbar
       }
     }
     
     return false;
     
   } catch (error) {
-    console.log('🏓 VPN-Server Konnektivität: Fehler -', error.message);
     return false;
   }
 };
@@ -625,7 +615,6 @@ const checkServerConnectivity = async () => {
  */
 const checkWireGuardService = async () => {
   try {
-    console.log('🔌 Prüfe WireGuard-Service auf Port 51820...');
     
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
@@ -637,7 +626,6 @@ const checkWireGuardService = async () => {
     
     for (const target of targets) {
       try {
-        console.log(`🔌 Teste WireGuard-Port auf ${target}:51820...`);
         const { stdout, stderr } = await execAsync(`timeout 3 nc -u -z -v ${target} 51820 2>&1`, { 
           timeout: 5000,
           encoding: 'utf8'
@@ -646,24 +634,19 @@ const checkWireGuardService = async () => {
         const output = (stdout + stderr).toLowerCase();
         
         if (output.includes('succeeded') || output.includes('open') || output.includes('connected')) {
-          console.log(`🔌 WireGuard-Port 51820 ist erreichbar auf ${target}`);
           return true;
         }
         
-        console.log(`🔌 WireGuard-Port 51820 nicht erreichbar auf ${target}`);
-        
       } catch (error) {
-        console.log(`🔌 WireGuard-Port-Prüfung auf ${target} fehlgeschlagen:`, error.message);
+        // Port check failed for this target
       }
     }
     
     // Fallback: Wenn Hostname funktioniert aber Port-Check fehlschlägt,
     // gehe davon aus dass der Service läuft (häufig bei restriktiven Firewalls)
-    console.log('🔌 Port-Check fehlgeschlagen, aber Server ist erreichbar - WireGuard vermutlich aktiv');
     return true; // Optimistische Annahme bei erreichbarem Server
     
   } catch (error) {
-    console.log('🔌 WireGuard-Service-Prüfung - Fehler:', error.message);
     return false;
   }
 };
@@ -684,8 +667,6 @@ const checkWireGuardService = async () => {
  * @returns {Promise<Object>} VPN-Statistiken mit aktuellen Peer-Daten
  */
 const getVPNPeerStatistics = async () => {
-  console.log('📊 Rufe detaillierte VPN Peer-Statistiken ab...');
-  
   try {
     // ===== INFRASTRUKTUR-GESUNDHEITSPRÜFUNG =====
     
@@ -756,7 +737,6 @@ const getVPNPeerStatistics = async () => {
     // ===== WIREGUARD-SERVICE-STATUS VERARBEITEN =====
     
     if (serviceStatus.isRunning || serviceStatus.running || serviceStatus.status === 'running') {
-      console.log('🟢 WireGuard-Service läuft - rufe Client- und Server-Daten ab...');
       
       // ===== CLIENT-INFORMATIONEN ABRUFEN =====
       
@@ -772,7 +752,6 @@ const getVPNPeerStatistics = async () => {
         
         // Gesamtzahl der konfigurierten Clients
         totalPeers = clientInfo.length;
-        console.log(`📊 Gefundene Client-Peers: ${totalPeers}`);
         
         // ===== CLIENT-DATEN ANALYSIEREN =====
         
@@ -906,7 +885,6 @@ const getVPNPeerStatistics = async () => {
  */
 const getPortalStats = async (req, res) => {
   try {
-    console.log('📈 Rufe Portal-Statistiken ab...');
     
     // ===== ADMIN-BERECHTIGUNG PRÜFEN =====
     
@@ -914,7 +892,6 @@ const getPortalStats = async (req, res) => {
     
     if (!isAdmin) {
       // ===== BESCHRÄNKTE DATEN FÜR NORMALE BENUTZER =====
-      console.log(`📊 Beschränkte Portal-Statistiken für Benutzer: ${req.user?.username}`);
       
       const limitedStats = {
         // Nur grundlegende Service-Status-Informationen
@@ -935,17 +912,8 @@ const getPortalStats = async (req, res) => {
         }
       };
       
-      console.log(`📊 Beschränkte Statistiken für ${req.user?.username} bereitgestellt`);
-      
-      // Minimales Logging für normale Benutzer
-      if (!req.isPublicAccess) {
-        console.log(`📊 Portal-Statistiken-Zugriff: ${req.user?.username} (beschränkt)`);
-      }
-      
       return res.json(limitedStats);
     }
-    
-    console.log(`📈 Vollständige Portal-Statistiken für Admin: ${req.user?.username}`);
     
     // ===== VOLLSTÄNDIGE DATENABFRAGE FÜR ADMINS =====
     
@@ -1003,8 +971,6 @@ const getPortalStats = async (req, res) => {
     };
     
     // ===== ERFOLGS-LOGGING =====
-    
-    console.log(`✅ Portal-Statistiken erfolgreich abgerufen: ${userStats.totalRegistered} LDAP-Benutzer (${userStats.newUsersThisMonth} neu diesen Monat), ${vpnPeerStats.totalPeers} VPN-Peers (${vpnPeerStats.connectedPeers} verbunden, ${vpnPeerStats.newPeersToday} neu heute)`);
     
     // ===== SICHERHEITS-AUDIT-LOGGING =====
     
@@ -1105,7 +1071,6 @@ const getWireGuardServiceStatus = async (req, res) => {
  */
 const getHealthStatus = async (req, res) => {
   try {
-    console.log('🏥 Führe umfassende Systemprüfung durch...');
     
     const healthStatus = {
       status: 'healthy',
@@ -1116,7 +1081,6 @@ const getHealthStatus = async (req, res) => {
 
     // LDAP-Verbindung prüfen
     try {
-      console.log('🔍 Prüfe LDAP-Verbindung...');
       if (process.env.LDAP_URL) {
         const testUsers = await getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten');
         healthStatus.services.ldap = {
@@ -1139,7 +1103,6 @@ const getHealthStatus = async (req, res) => {
 
     // VPN-Server-Konnektivität prüfen
     try {
-      console.log('🔍 Prüfe VPN-Server-Konnektivität...');
       const serverReachable = await checkServerConnectivity();
       healthStatus.services.vpnServer = {
         status: serverReachable ? 'healthy' : 'unhealthy',

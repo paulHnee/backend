@@ -74,7 +74,7 @@ export const getGroupMembers = async (groupName) => {
       timeout: 30000,        // 30 Sekunden Timeout
       connectTimeout: 10000, // 10 Sekunden Verbindungs-Timeout
       tlsOptions: {
-        rejectUnauthorized: true // TLS-Zertifikate validieren
+        rejectUnauthorized: false // Für Entwicklungsumgebungen - TLS-Zertifikate nicht streng prüfen
       }
     });
 
@@ -213,7 +213,7 @@ export const searchGroups = async (searchPattern = '*') => {
       timeout: 30000,
       connectTimeout: 10000,
       tlsOptions: {
-        rejectUnauthorized: true
+        rejectUnauthorized: false // Für Entwicklungsumgebungen - TLS-Zertifikate nicht streng prüfen
       }
     });
 
@@ -266,15 +266,6 @@ export const searchGroups = async (searchPattern = '*') => {
               attributes = entry.json();
             }
             
-            // Debug-Logging für LDAP-Struktur
-            console.log(`🔍 LDAP Entry gefunden:`, {
-              dn: entry.dn ? entry.dn.toString() : 'undefined',
-              hasObject: !!entry.object,
-              hasAttributes: !!entry.attributes,
-              attributeKeys: attributes ? Object.keys(attributes) : 'none',
-              entryKeys: Object.keys(entry)
-            });
-            
             if (!attributes) {
               console.warn('LDAP Entry ohne verarbeitbare Attribute gefunden, überspringe...');
               return;
@@ -322,7 +313,6 @@ export const searchGroups = async (searchPattern = '*') => {
                 objectClass: objectClass,
                 type: isOU ? 'OU' : 'Group'
               });
-              console.log(`📋 Gefundene ${isOU ? 'OU' : 'Gruppe'}: ${groupName.trim()} (${memberCount} Mitglieder)`);
             }
           } catch (parseError) {
             console.warn('Fehler beim Parsen der LDAP-Gruppe:', parseError.message);

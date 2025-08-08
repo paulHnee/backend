@@ -151,8 +151,6 @@ class OPNsenseAPI {
    */
   async getSystemStatus() {
     try {
-      console.log('🔍 Versuche Menu-API für System-Status...');
-      
       // Nutze funktionierenden Menu-Endpunkt
       const menuItems = await this.request('/api/core/menu/search', 'POST', {});
       
@@ -407,8 +405,6 @@ class OPNsenseAPI {
    */
   async getStatus() {
     try {
-      console.log('🔍 Verwende Menu-API für kombinierten Status...');
-      
       // Hole System- und Service-Status über funktionierenden Endpunkt
       const [systemStatus, serviceStatus] = await Promise.all([
         this.getSystemStatus(),

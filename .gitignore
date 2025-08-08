@@ -1,3 +1,6 @@
 /.env
 certs/
 node_modules/
+/test/logs
+/test/.env
+/logs
