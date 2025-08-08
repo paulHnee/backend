@@ -34,15 +34,13 @@ class OPNsenseAPI {
     this.apiSecret = process.env.OPNSENSE_API_SECRET;
     this.baseUrl = `https://${this.host}:${this.port}`;
     this.currentHost = this.host; // Aktuell verwendeter Host
-    this.timeout = parseInt(process.env.OPNSENSE_TIMEOUT) || 10000; // Convert string to number, default 10s
-    this.retries = 1; // Reduce retries to speed up fallback
+    this.timeout = process.env.OPNSENSE_TIMEOUT || 5000; // 5 Sekunden für realen Server
+    this.retries = 3;
     
     // TLS-Optionen für selbstsignierte Zertifikate (OPNsense Standard)
     this.tlsOptions = {
       rejectUnauthorized: false, // Akzeptiere selbstsignierte Zertifikate
-      timeout: this.timeout,
-      secureProtocol: 'TLSv1_2_method', // Force TLS 1.2 for faster handshake
-      servername: this.host // SNI for proper certificate handling
+      timeout: this.timeout
     };
     
     // Warnung ausgeben aber nicht werfen wenn API-Anmeldedaten fehlen
@@ -138,7 +136,7 @@ class OPNsenseAPI {
         reject(new Error(`Request timeout zu ${hostname}`));
       });
 
-      req.setTimeout(this.timeout); // Use configurable timeout from environment
+      req.setTimeout(5000); // 5 Sekunden Timeout für echten Server
 
       if (data && (method === 'POST' || method === 'PUT')) {
         req.write(JSON.stringify(data));
@@ -591,15 +589,6 @@ export const getOPNsenseAPI = () => {
     opnsenseInstance = new OPNsenseAPI();
   }
   return opnsenseInstance;
-};
-
-/**
- * OPNsense API-Singleton zurücksetzen (für Debugging/Tests)
- */
-export const resetOPNsenseAPI = () => {
-  console.log('🔄 Resetting OPNsense API singleton instance...');
-  opnsenseInstance = null;
-  return getOPNsenseAPI(); // Return new instance
 };
 
 /**
