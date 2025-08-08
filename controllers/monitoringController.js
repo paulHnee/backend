@@ -218,10 +218,7 @@ const getUserStatisticsWithLdapUtils = async () => {
       // Always use OU-based search for employees to exclude _MS365 accounts
       try {
         const angestellteFromOU = await getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte');
-        console.log(`🔍 OU-basierte Angestellten-Suche: ${angestellteFromOU.length} gefunden`);
-        console.log(`🔍 Gruppen-basierte Angestellten-Suche: ${totalAngestellte} gefunden`);
         totalAngestellte = angestellteFromOU.length; // Always use OU count to exclude _MS365
-        console.log(`🔄 Verwende OU-basierte Angestellten-Zählung: ${totalAngestellte} (ohne _MS365 accounts)`);
       } catch (ouError) {
         console.warn('⚠️ OU-basierte Angestellten-Suche fehlgeschlagen, verwende Gruppenzählung:', ouError.message);
         // Keep group-based count as fallback
@@ -349,7 +346,7 @@ const getUserStatisticsWithLdapUtils = async () => {
  * @param {string} ouName - Menschenlesbarer Name der OU für Logging (z.B. 'Studenten')
  * @returns {Promise<Array>} Array von Benutzerobjekten mit username, displayName, mail
  */
-const getUsersFromOU = async (ouPath, ouName) => {
+const getUsersFromOU_REMOVED = async (ouPath, ouName) => {
   return new Promise((resolve) => {
     try {
       // ===== VORBEDINGUNGEN PRÜFEN =====
@@ -679,8 +676,8 @@ const getVPNPeerStatistics = async () => {
       return {
         totalPeers: 0,                                    // Keine Peers bei unerreichbarem Server
         connectedPeers: 0,                                // Keine aktiven Verbindungen
-        newPeersToday: 0,                                 // Keine neuen Peers heute
-        newPeersThisWeek: 0,                              // Keine neuen Peers diese Woche
+        activeToday: 0,                                   // Keine Aktivität heute
+        activeThisWeek: 0,                                // Keine Aktivität diese Woche
         serverReachable: false,                           // Server-Status: Nicht erreichbar
         serviceRunning: false,                            // Service kann nicht geprüft werden
         serverStatus: 'unreachable',                      // Expliziter Status
@@ -713,8 +710,8 @@ const getVPNPeerStatistics = async () => {
       return {
         totalPeers: 0,                                    // API-Fehler, keine Peer-Daten
         connectedPeers: 0,                                // API-Fehler, keine Verbindungsdaten
-        newPeersToday: 0,                                 // API-Fehler, keine zeitlichen Daten
-        newPeersThisWeek: 0,                              // API-Fehler, keine zeitlichen Daten
+        activeToday: 0,                                   // API-Fehler, keine Aktivitätsdaten
+        activeThisWeek: 0,                                // API-Fehler, keine Aktivitätsdaten
         serverReachable: true,                            // Server ist erreichbar (Ping OK)
         serviceRunning: serviceRunning,                   // Port-basierte Service-Prüfung
         serverStatus: serviceRunning ? 'api-error' : 'service-down',
@@ -730,56 +727,64 @@ const getVPNPeerStatistics = async () => {
     
     let totalPeers = 0;      // Gesamtzahl konfigurierter Peers
     let connectedPeers = 0;  // Aktuell verbundene Peers
-    let newPeersToday = 0;   // Neue Peers heute (berechnet)
-    let newPeersThisWeek = 0; // Neue Peers diese Woche (berechnet)
+    let activeToday = 0;     // Peers mit Handshake heute
+    let activeThisWeek = 0;  // Peers mit Handshake diese Woche
     let serverInfo = null;   // Server-Informationen (außerhalb des if-Blocks definiert)
     
     // ===== WIREGUARD-SERVICE-STATUS VERARBEITEN =====
     
     if (serviceStatus.isRunning || serviceStatus.running || serviceStatus.status === 'running') {
       
-      // ===== CLIENT-INFORMATIONEN ABRUFEN =====
+      // ===== LIVE PEER-INFORMATIONEN ABRUFEN =====
       
-      // OPNsense Client-Datenbank abfragen
-      const clientInfo = await opnsenseAPI.getClients().catch(() => null);
+      // OPNsense Service-Info für echte Peer-Daten abfragen (zeigt aktuelle Verbindungen)
+      const serviceInfo = await opnsenseAPI.getServiceInfo().catch(() => null);
       
-      if (clientInfo && clientInfo.length > 0) {
+      if (serviceInfo && serviceInfo.rows && serviceInfo.rows.length > 0) {
+        console.log(`📊 Live WireGuard-Daten: ${serviceInfo.total || serviceInfo.rows.length} Peers gefunden`);
+        
         // ===== ZEITBERECHNUNGEN FÜR NEUE PEERS =====
         
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // Heute 00:00 Uhr
         const weekAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));   // Vor 7 Tagen
         
-        // Gesamtzahl der konfigurierten Clients
-        totalPeers = clientInfo.length;
+        // Gesamtzahl der konfigurierten Peers (direkt von Service-API)
+        totalPeers = serviceInfo.total || serviceInfo.rows.length;
         
-        // ===== CLIENT-DATEN ANALYSIEREN =====
+        // ===== LIVE PEER-DATEN ANALYSIEREN =====
         
-        clientInfo.forEach(client => {
-          // Verbundene Clients identifizieren (verschiedene API-Formate berücksichtigen)
-          if (client.connected === '1' || client.connected === true || client.status === 'connected') {
+        serviceInfo.rows.forEach(peer => {
+          // Verbundene Peers identifizieren - prüfe auf aktive Verbindung
+          // Peer ist verbunden wenn latest-handshake > 0 oder endpoint existiert
+          if (peer['latest-handshake'] && peer['latest-handshake'] > 0) {
+            connectedPeers++;
+          } else if (peer.endpoint && peer.endpoint !== '(none)') {
             connectedPeers++;
           }
           
           // ===== ZEITLICHE METRIKEN BERECHNEN =====
           
-          // Erstellungszeit des Clients prüfen (created oder modified timestamp)
-          if (client.created || client.modified) {
-            const createdDate = new Date(client.created || client.modified);
+          // Da Service-API keine Erstellungszeiten liefert, verwende Handshake-Zeiten als Indikator
+          if (peer['latest-handshake'] && peer['latest-handshake'] > 0) {
+            const handshakeDate = new Date(peer['latest-handshake'] * 1000); // Unix timestamp zu Date
             
-            // Neue Peers heute zählen
-            if (createdDate >= today) {
-              newPeersToday++;
+            // Peers mit Handshakes heute (Aktivitätsindikator)
+            if (handshakeDate >= today) {
+              activeToday++;
             }
             
-            // Neue Peers diese Woche zählen
-            if (createdDate >= weekAgo) {
-              newPeersThisWeek++;
+            // Peers mit Handshakes diese Woche
+            if (handshakeDate >= weekAgo) {
+              activeThisWeek++;
             }
           }
         });
         
-        console.log(`📊 Client-Analyse: ${connectedPeers}/${totalPeers} verbunden, ${newPeersToday} neu heute, ${newPeersThisWeek} neu diese Woche`);
+        console.log(`✅ Peer-Analyse: ${totalPeers} gesamt, ${connectedPeers} verbunden`);
+        
+      } else {
+        console.warn('⚠️ Keine Live-Peer-Daten von Service-API verfügbar');
       }
       
       // ===== SERVER-INFORMATIONEN ABRUFEN =====
@@ -788,7 +793,6 @@ const getVPNPeerStatistics = async () => {
       serverInfo = await opnsenseAPI.getServerInfo().catch(() => null);
       
       if (serverInfo && serverInfo.length > 0) {
-        console.log(`📊 Gefundene Server-Konfigurationen: ${serverInfo.length}`);
         
         // Server-Peers zu Gesamtstatistik hinzufügen
         serverInfo.forEach(server => {
@@ -806,13 +810,13 @@ const getVPNPeerStatistics = async () => {
       
       // Only use real data from API - don't generate fake statistics
       // If no real time-based data is available, report as unavailable
-      if (newPeersToday === 0 && totalPeers > 0) {
-        console.warn('⚠️ No real "new peers today" data available from API');
+      if (activeToday === 0 && totalPeers > 0) {
+        console.warn('⚠️ No peers with handshakes today - all peers may be inactive');
         // Don't hallucinate - keep it as 0 or mark as unavailable
       }
       
-      if (newPeersThisWeek === 0 && totalPeers > 0) {
-        console.warn('⚠️ No real "new peers this week" data available from API');
+      if (activeThisWeek === 0 && totalPeers > 0) {
+        console.warn('⚠️ No peers with handshakes this week - all peers may be inactive');
         // Don't hallucinate - keep it as 0 or mark as unavailable
       }
     } else {
@@ -823,8 +827,8 @@ const getVPNPeerStatistics = async () => {
       return {
         totalPeers,                                         // Gesamtzahl konfigurierter Peers
         connectedPeers,                                     // Aktuell verbundene Peers
-        newPeersToday,                                      // Neue Peers heute (berechnet oder real)
-        newPeersThisWeek,                                   // Neue Peers diese Woche (berechnet oder real)
+        activeToday,                                        // Peers mit Handshake heute
+        activeThisWeek,                                     // Peers mit Handshake diese Woche
         serverReachable: true,                              // Server ist erreichbar
         serviceRunning: Boolean(serviceStatus.isRunning || serviceStatus.running || serviceStatus.status === 'running'), // Service-Status
         serverStatus: 'healthy',                            // Gesunde Server-Status
@@ -847,8 +851,8 @@ const getVPNPeerStatistics = async () => {
     return {
       totalPeers: 0,              // Keine Peers bei Fehlern
       connectedPeers: 0,          // Keine Verbindungen bei Fehlern
-      newPeersToday: 0,           // Keine zeitlichen Daten bei Fehlern
-      newPeersThisWeek: 0,        // Keine zeitlichen Daten bei Fehlern
+      activeToday: 0,             // Keine Aktivität heute bei Fehlern
+      activeThisWeek: 0,          // Keine Aktivität diese Woche bei Fehlern
       serverReachable: false,     // Unsicherer Status bei Fehlern
       serviceRunning: false,      // Unsicherer Status bei Fehlern
       serverStatus: 'error',      // Expliziter Fehler-Status
@@ -930,8 +934,8 @@ const getPortalStats = async (req, res) => {
       vpn: {
         totalPeers: vpnPeerStats.totalPeers || 0,          // Gesamtzahl konfigurierter Peers
         connectedPeers: vpnPeerStats.connectedPeers || 0,  // Aktuell verbundene Peers
-        newPeersToday: vpnPeerStats.newPeersToday || 0,    // Neue Peers heute
-        newPeersThisWeek: vpnPeerStats.newPeersThisWeek || 0, // Neue Peers diese Woche
+        activeToday: vpnPeerStats.activeToday || 0,        // Peers mit Handshake heute
+        activeThisWeek: vpnPeerStats.activeThisWeek || 0,  // Peers mit Handshake diese Woche
         serverStatus: vpnPeerStats.serverStatus,           // Server-Gesundheitsstatus
         serverReachable: vpnPeerStats.serverReachable,     // Server-Erreichbarkeit
         serviceRunning: vpnPeerStats.serviceRunning,       // Service-Verfügbarkeit
@@ -948,6 +952,8 @@ const getPortalStats = async (req, res) => {
         totalRegistered: userStats.totalRegistered,        // Alle registrierten Benutzer
         activeToday: userStats.activeToday,                // Aktive Benutzer heute
         newUsersThisMonth: userStats.newUsersThisMonth || 0, // Neue Benutzer diesen Monat
+        employees: userStats.groups.angestellte,           // Anzahl Angestellte
+        students: userStats.groups.studenten,              // Anzahl Studenten
         groups: userStats.groups,                          // Gruppierte Benutzerstatistiken
         lastUpdated: userStats.lastUpdated,                // Zeitstempel der Datenaktualisierung
         dataSource: userStats.source || userStats.dataSource || 'ldap' // LDAP-Datenquelle
@@ -962,8 +968,8 @@ const getPortalStats = async (req, res) => {
       summary: {
         totalVpnPeers: vpnPeerStats.totalPeers || 0,           // VPN-Peer-Gesamt
         connectedVpnPeers: vpnPeerStats.connectedPeers || 0,   // VPN-Peers verbunden
-        newVpnPeersToday: vpnPeerStats.newPeersToday || 0,     // VPN-Peers neu heute
-        newVpnPeersThisWeek: vpnPeerStats.newPeersThisWeek || 0, // VPN-Peers neu diese Woche
+        activeVpnPeersToday: vpnPeerStats.activeToday || 0,    // VPN-Peers aktiv heute
+        activeVpnPeersThisWeek: vpnPeerStats.activeThisWeek || 0, // VPN-Peers aktiv diese Woche
         totalLdapUsers: userStats.totalRegistered || 0,        // LDAP-Benutzer gesamt
         newLdapUsersThisMonth: userStats.newUsersThisMonth || 0, // LDAP-Benutzer neu diesen Monat
         systemHealthy: vpnPeerStats.serverReachable && vpnPeerStats.serviceRunning // System-Gesundheit
@@ -1015,8 +1021,8 @@ const getWireGuardServiceStatus = async (req, res) => {
       peers: {
         total: vpnPeerStats.totalPeers,
         connected: vpnPeerStats.connectedPeers,
-        newToday: vpnPeerStats.newPeersToday,
-        newThisWeek: vpnPeerStats.newPeersThisWeek
+        activeToday: vpnPeerStats.activeToday,
+        activeThisWeek: vpnPeerStats.activeThisWeek
       },
       servers: { count: 0, connected: 0 }, // Wird von getVPNPeerStatistics bereits behandelt
       clients: { 
@@ -1042,7 +1048,7 @@ const getWireGuardServiceStatus = async (req, res) => {
           status: 'unavailable',
           warning: 'Externe VPN-Server-Verbindung nicht verfügbar'
         },
-        peers: wireGuardStatus.peers || { total: 0, connected: 0, newToday: 0 },
+        peers: wireGuardStatus.peers || { total: 0, connected: 0, activeToday: 0 },
         serverReachable: vpnPeerStats.serverReachable,
         serverStatus: vpnPeerStats.serverStatus,
         dataSource: vpnPeerStats.dataSource || 'fallback',
@@ -1053,7 +1059,7 @@ const getWireGuardServiceStatus = async (req, res) => {
     }
 
     logSecurityEvent(req.user?.username || 'unknown', 'VIEW_WIREGUARD_STATUS', 
-      `WireGuard-Status abgerufen: ${wireGuardStatus.peers.total} Total Peers, ${wireGuardStatus.peers.connected} connected, ${wireGuardStatus.peers.newToday} neue heute`);
+      `WireGuard-Status abgerufen: ${wireGuardStatus.peers.total} Total Peers, ${wireGuardStatus.peers.connected} connected, ${wireGuardStatus.peers.activeToday} aktiv heute`);
     
     res.json(wireGuardStatus);
   } catch (error) {
@@ -1118,7 +1124,6 @@ const getHealthStatus = async (req, res) => {
 
     // OPNsense API-Verbindung prüfen
     try {
-      console.log('🔍 Prüfe OPNsense API...');
       const circuitStatus = circuitBreaker.getStatus();
       
       try {
@@ -1279,7 +1284,6 @@ const resetCircuitBreaker = async (req, res) => {
  */
 const getWireGuardConfig = async (req, res) => {
   try {
-    console.log('📋 Rufe WireGuard-Konfiguration für Monitoring ab...');
     
     const config = {
       general: null,
@@ -1412,7 +1416,6 @@ const getPersonalVpnStats = async (req, res) => {
         dataSource = 'opnsense-api';
         serverStatus = 'healthy';
         
-        console.log(`📊 Gefundene persönliche VPN-Peers für ${username}: ${personalPeers.length} von ${allClients.length} total`);
       }
     } catch (apiError) {
       console.warn(`⚠️ OPNsense API-Fehler für ${username}:`, apiError.message);

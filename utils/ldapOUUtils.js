@@ -56,18 +56,9 @@ export const getUsersFromOU = async (ouDN, ouName) => {
             // Exclude users from _MS365 and Pooltest OUs by checking DN
             const entryDN = entry.dn ? entry.dn.toString() : entry.objectName;
             
-            // Debug logging for _MS365 detection
             if (entryDN && (entryDN.includes('OU=_MS365') || entryDN.includes('OU=Pooltest'))) {
               excludedCount++;
-              if (excludedCount <= 5) { // Only log first 5 exclusions to avoid spam
-                console.log(`🚫 Excluding user from: ${entryDN}`);
-              }
               return; // Skip users in _MS365 and Pooltest organizational units
-            }
-
-            // Additional debug for first few entries to see DN structure
-            if (users.length < 3) {
-              console.log(`🔍 Sample DN: ${entryDN}`);
             }
 
             // LDAP-Attribute extrahieren
@@ -107,9 +98,7 @@ export const getUsersFromOU = async (ouDN, ouName) => {
 
         searchRes.on('end', () => {
           const enabledUsers = users.filter(u => u.enabled);
-          console.log(`${enabledUsers.length} Benutzer in OU ${ouName} gefunden (ohne _MS365 und Pooltest OUs)`);
-          console.log(`🚫 ${excludedCount} Benutzer aus _MS365/Pooltest OUs ausgeschlossen`);
-          console.log(`📍 ldapOUUtils.js VERSION 2.1 - _MS365 filtering ACTIVE`);
+          console.log(`✅ FINAL COUNT: ${enabledUsers.length} Benutzer in OU ${ouName} gefunden (${excludedCount} _MS365/Pooltest ausgeschlossen)`);
           
           client.destroy();
           resolve(enabledUsers); // Nur aktivierte Benutzer zurückgeben
