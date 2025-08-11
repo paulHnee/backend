@@ -21,7 +21,7 @@ export const getQuickServices = async (req, res) => {
   try {
     const user = req.user?.username || 'unknown';
 
-    console.log(`🚀 Quick-Services für ${user}`);
+
 
     const quickServices = {
       essential: [

@@ -42,18 +42,7 @@ class OPNsenseAPI {
   // Set SNI servername to match certificate when using IP
   this.tlsOptions = { rejectUnauthorized: false, timeout: this.timeout, servername: this.sni };
 
-  // Log all relevant config for debugging
-  console.log('[OPNsenseAPI] Constructor config:');
-  console.log('  host:', this.host);
-  console.log('  port:', this.port);
-  console.log('  protocol:', this.protocol);
-  console.log('  apiKey:', this.apiKey ? '[set]' : '[not set]');
-  console.log('  apiSecret:', this.apiSecret ? '[set]' : '[not set]');
-  console.log('  baseUrl:', this.baseUrl);
-  console.log('  timeout:', this.timeout);
-  console.log('  retries:', this.retries);
-  console.log('  tlsOptions:', this.tlsOptions);
-  console.log('  SNI (servername):', this.sni);
+  // Only log critical config errors
 
     if (!this.apiKey || !this.apiSecret) {
       console.warn('⚠️ OPNsense API-Anmeldedaten nicht konfiguriert (OPNSENSE_API_KEY/OPNSENSE_API_SECRET fehlen)');
@@ -98,16 +87,11 @@ class OPNsenseAPI {
       };
 
       if ((method === 'POST' || method === 'PUT') && data != null) {
-        const jsonData = JSON.stringify(data);
+  const jsonData = JSON.stringify(data); // No debug output
         options.headers['Content-Length'] = Buffer.byteLength(jsonData);
       }
 
-      // Extra debug logging
-      console.log('--- OPNsenseAPI DEBUG ---');
-      console.log('Request options:', JSON.stringify(options, null, 2));
-      if (data) console.log('Request body:', data);
-      console.log('Endpoint:', `${method} https://${hostname}${endpoint}`);
-      console.log('-------------------------');
+  // ...
 
       const req = https.request(options, (res) => {
         let responseData = '';
@@ -117,11 +101,7 @@ class OPNsenseAPI {
         });
 
         res.on('end', () => {
-          console.log(`🔍 API Response Status: ${res.statusCode}`);
-          console.log(`🔍 API Response Headers:`, res.headers);
-          console.log(`🔍 API Response Body (first 300 chars): ${responseData.substring(0, 300)}...`);
-          // Full response body for debug
-          console.log('Full API Response Body:', responseData);
+          // ...
 
           try {
             // Prüfe ob Response leer ist oder HTML statt JSON enthält
@@ -129,7 +109,6 @@ class OPNsenseAPI {
               reject(new Error(`Empty response from OPNsense API: ${hostname}${endpoint}`));
               return;
             }
-
             // Prüfe ob Response HTML statt JSON ist (Server Error Page)
             if (responseData.trim().startsWith('<') || responseData.includes('<html>')) {
               reject(new Error(`HTML response instead of JSON from OPNsense API (likely auth error): ${hostname}${endpoint}`));
@@ -161,7 +140,7 @@ class OPNsenseAPI {
       req.setTimeout(5000); // 5 Sekunden Timeout für echten Server
 
       if ((method === 'POST' || method === 'PUT') && data != null) {
-        req.write(JSON.stringify(data));
+  req.write(JSON.stringify(data)); // No debug output
       }
 
       req.end();
@@ -187,9 +166,7 @@ class OPNsenseAPI {
         return arr;
       }
       const flatMenu = flattenMenuTree(menuTree);
-
       if (flatMenu && Array.isArray(flatMenu)) {
-        console.log(`✅ Menu-Tree-API erfolgreich: ${flatMenu.length} Items gefunden`);
         return {
           status: 'online',
           message: 'OPNsense Core API verfügbar',
@@ -237,7 +214,7 @@ class OPNsenseAPI {
       const flatMenu = flattenMenuTree(menuTree);
 
       if (flatMenu && Array.isArray(flatMenu)) {
-        console.log(`✅ Menu-Tree-API erfolgreich: ${flatMenu.length} Items erhalten`);
+  // ...
 
         // Extrahiere Service-relevante Menu-Einträge
         const serviceRelatedItems = flatMenu.filter(item => 
@@ -259,7 +236,7 @@ class OPNsenseAPI {
           breadcrumb: item.breadcrumb || ''
         }));
 
-        console.log(`✅ ${services.length} service-relevante Menu-Items gefunden`);
+  // ...
 
         return {
           total: services.length,
@@ -272,7 +249,7 @@ class OPNsenseAPI {
       throw new Error('Menu-Tree-API gab keine gültigen Daten zurück');
 
     } catch (error) {
-      console.error('❌ Fehler beim Abrufen der Services:', error.message);
+  console.error('Fehler beim Abrufen der Services:', error.message);
 
       // Minimaler Fallback
       return {
@@ -345,7 +322,7 @@ class OPNsenseAPI {
   async getClients() {
     try {
       // Versuche zuerst WireGuard-spezifische API
-      console.log('🔍 Versuche WireGuard Client-API...');
+  // ...
       const response = await this.request('/api/wireguard/client/searchClient', 'POST', {});
       console.log('✅ WireGuard Client-API erfolgreich');
       return response.rows || [];
@@ -386,7 +363,7 @@ class OPNsenseAPI {
    */
   async createClient(clientData) {
     try {
-      console.log('🔍 Erstelle WireGuard-Client...');
+  // ...
       const response = await this.request('/api/wireguard/client/addClient', 'POST', clientData);
       console.log('✅ WireGuard-Client erfolgreich erstellt');
       return response;
@@ -401,7 +378,7 @@ class OPNsenseAPI {
    */
   async updateClient(clientId, clientData) {
     try {
-      console.log(`🔍 Aktualisiere WireGuard-Client: ${clientId}`);
+  // ...
       const response = await this.request(`/api/wireguard/client/setClient/${clientId}`, 'POST', clientData);
       console.log('✅ WireGuard-Client erfolgreich aktualisiert');
       return response;
@@ -416,7 +393,7 @@ class OPNsenseAPI {
    */
   async deleteClient(clientId) {
     try {
-      console.log(`🔍 Lösche WireGuard-Client: ${clientId}`);
+  // ...
       const response = await this.request(`/api/wireguard/client/delClient/${clientId}`, 'POST', {});
       console.log('✅ WireGuard-Client erfolgreich gelöscht');
       return response;
@@ -431,7 +408,7 @@ class OPNsenseAPI {
    */
   async reconfigure() {
     try {
-      console.log('🔍 Lade WireGuard-Konfiguration neu...');
+  // ...
       const response = await this.request('/api/wireguard/service/reconfigure', 'POST', {});
       console.log('✅ WireGuard-Konfiguration erfolgreich neu geladen');
       return response;
@@ -467,7 +444,7 @@ class OPNsenseAPI {
         service.name?.toLowerCase().includes('wireguard')
       ) || [];
       
-      console.log(`✅ Kombinierter Status erfolgreich - ${vpnServices.length} VPN-Services gefunden`);
+  // ...
       
       return {
         status: systemStatus.status === 'online' ? 'running' : 'error',
@@ -490,7 +467,7 @@ class OPNsenseAPI {
       };
       
     } catch (error) {
-      console.error('❌ Fehler beim Abrufen des kombinierten Status:', error.message);
+  console.error('Fehler beim Abrufen des kombinierten Status:', error.message);
       
       return {
         status: 'error',

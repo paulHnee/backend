@@ -711,8 +711,8 @@ const getVPNPeerStatistics = async () => {
       const serviceInfo = await opnsenseAPI.getServiceInfo().catch(() => null);
       
       if (serviceInfo && serviceInfo.rows && serviceInfo.rows.length > 0) {
-        console.log(`📊 Live WireGuard-Daten: ${serviceInfo.total || serviceInfo.rows.length} Peers gefunden`);
-        
+        console.log(`📊 Live WireGuard-Daten: ${serviceInfo.rows.length} Peers gefunden`);
+
         // ===== ZEITBERECHNUNGEN FÜR NEUE PEERS =====
         
         const now = new Date();
@@ -751,7 +751,7 @@ const getVPNPeerStatistics = async () => {
           }
         });
         
-        console.log(`✅ Peer-Analyse: ${totalPeers} gesamt, ${connectedPeers} verbunden`);
+  // console.log(`✅ Peer-Analyse: ${totalPeers} gesamt, ${connectedPeers} verbunden`);
         
       } else {
         console.warn('⚠️ Keine Live-Peer-Daten von Service-API verfügbar');
