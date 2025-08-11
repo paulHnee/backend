@@ -1,4 +1,22 @@
 /**
+ * WireGuard Service-Info Endpoint (OPNsense)
+ * Gibt den aktuellen Service-Status von WireGuard zurück
+ */
+const getWireGuardServiceInfo = async (req, res) => {
+  try {
+    const opnsenseAPI = getOPNsenseAPI();
+    const info = await opnsenseAPI.getServiceInfo();
+    res.json(info);
+  } catch (error) {
+    console.error('Fehler beim Abrufen der WireGuard Service-Info:', error);
+    res.status(500).json({
+      error: 'Fehler beim Abrufen der WireGuard Service-Info',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+/**
  * HNEE Monitoring Controller
  * 
  * Dieses Modul stellt alle Monitoring-Funktionen für das HNEE Service Portal bereit.
@@ -154,17 +172,15 @@ const getUserStatisticsWithLdapUtils = async () => {
     
     // Definiere Gruppenmuster für verschiedene Benutzertypen
     // Diese Muster werden für die intelligente Gruppenerkennung verwendet
-    const studentenGroups = ['Studenten', 'Studierende', 'studenten', 'student'];           // Studenten-Identifikatoren
-    const angestellteGroups = ['Angestellte', 'Mitarbeiter', 'Beschaeftigte', 'mitarbeiter', 'personal', 'wissenschaftliche', 'WissenschaftlicheMitarbeiter', 'wissenschaftlich']; // Angestellte-Identifikatoren (inkl. wissenschaftliche)
-    const gastdozentenGroups = ['Gastdozenten', 'GastDozenten', 'gastdozenten', 'dozent']; // Gastdozenten-Identifikatoren
-    const itszGroups = ['ITSZadmins', 'IT-Mitarbeiter', 'itsz', 'ITSZ'];                // ITSZ-Team-Identifikatoren
+    const studentenGroups = ['Studenten'];           // Studenten-Identifikatoren
+    const angestellteGroups = ['Angestellte']; // Angestellte-Identifikatoren (inkl. wissenschaftliche)
+    const gastdozentenGroups = ['Gastdozenten']; // Gastdozenten-Identifikatoren
+  
     
     // Zähler für verschiedene Benutzertypen initialisieren
     let totalStudenten = 0;
     let totalAngestellte = 0;
-    let totalWissenschaftliche = 0;
     let totalGastdozenten = 0;
-    let totalITSZ = 0;
     
     // STRATEGIE 1: Moderne Gruppensuche mit searchGroups() von ldapUtils
     try {
@@ -188,10 +204,7 @@ const getUserStatisticsWithLdapUtils = async () => {
         // Angestellte-Gruppen identifizieren und zählen (inkl. alle Mitarbeitertypen)
         if (angestellteGroups.some(ag => groupNameLower.includes(ag.toLowerCase()))) {
           totalAngestellte += group.memberCount || 0;
-          // Wissenschaftliche Mitarbeiter separat zählen für Tracking
-          if (groupNameLower.includes('wissenschaftlich')) {
-            totalWissenschaftliche += group.memberCount || 0;
-          }
+          
         }
         
         // Gastdozenten-Gruppen identifizieren und zählen
@@ -199,10 +212,6 @@ const getUserStatisticsWithLdapUtils = async () => {
           totalGastdozenten += group.memberCount || 0;
         }
         
-        // ITSZ-Gruppen identifizieren und zählen
-        if (itszGroups.some(ig => groupNameLower.includes(ig.toLowerCase()))) {
-          totalITSZ += group.memberCount || 0;
-        }
       }
       
       // ===== HYBRID APPROACH: USE WHAT WORKS BEST =====
@@ -214,67 +223,34 @@ const getUserStatisticsWithLdapUtils = async () => {
       } catch (ouError) {
         console.warn('⚠️ OU-basierte Studenten-Suche fehlgeschlagen:', ouError.message);
       }
-      
-      // Always use OU-based search for employees to exclude _MS365 accounts
       try {
         const angestellteFromOU = await getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte');
-        totalAngestellte = angestellteFromOU.length; // Always use OU count to exclude _MS365
+        totalAngestellte = angestellteFromOU.length; // OU-based is more reliable for employees
       } catch (ouError) {
-        console.warn('⚠️ OU-basierte Angestellten-Suche fehlgeschlagen, verwende Gruppenzählung:', ouError.message);
-        // Keep group-based count as fallback
+        console.warn('⚠️ OU-basierte Angestellten-Suche fehlgeschlagen:', ouError.message);
       }
-      
+      try {
+        const gastdozentenFromOU = await getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten');
+        totalGastdozenten = gastdozentenFromOU.length; // OU-based is more reliable for guest lecturers
+      } catch (ouError) {
+        console.warn('⚠️ OU-basierte Gastdozenten-Suche fehlgeschlagen:', ouError.message);
+      }
+
     } catch (groupError) {
       console.warn('⚠️ Gruppensuche fehlgeschlagen, verwende OU-basierte Methode:', groupError.message);
       
-      // FALLBACK: Pure OU-based approach
-      try {
-        const [studentenUsers, angestellteUsers, gastdozentenUsers] = await Promise.all([
-          getUsersFromOU('OU=Studenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Studenten').catch(() => []),
-          getUsersFromOU('OU=Angestellte,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Angestellte').catch(() => []),
-          getUsersFromOU('OU=Gastdozenten,OU=Benutzer,OU=FH-Eberswalde,DC=fh-eberswalde,DC=de', 'Gastdozenten').catch(() => [])
-        ]);
-        
-        totalStudenten = studentenUsers.length;
-        totalAngestellte = angestellteUsers.length;
-        totalGastdozenten = gastdozentenUsers.length;
-        
-      } catch (ouError) {
-        console.error('❌ Auch OU-basierte Suche fehlgeschlagen:', ouError.message);
-        // Keep any values we managed to get from groups
-      }
     }
     
     // Gesamtzahl aller Benutzer berechnen
-    const totalUsers = totalStudenten + totalAngestellte + totalGastdozenten + totalITSZ;
-    
+    const totalUsers = totalStudenten + totalAngestellte;
+
     // ===== FINAL MEMBER COUNT LOG =====
-    console.log(`✅ FINAL COUNT: ${totalUsers} total users - Studenten: ${totalStudenten}, Angestellte: ${totalAngestellte} (${totalWissenschaftliche} wissenschaftliche), Gastdozenten: ${totalGastdozenten}, ITSZ: ${totalITSZ}`);
+    console.log(`✅ FINAL COUNT: ${totalUsers} total users - Studenten: ${totalStudenten}, Angestellte: ${totalAngestellte}, Gastdozenten: ${totalGastdozenten}`);
     
-    // ===== ZEITLICHE METRIKEN BERECHNEN =====
-    
-    // Realistische Schätzung für neue Benutzer basierend auf Universitäts-Semesterzyklen
-    const now = new Date();
-    const currentMonth = now.getMonth(); // 0-11 (Januar=0, Dezember=11)
-    
-    // Semesterbasierte Multiplikatoren für neue Studentenregistrierungen:
-    // - August (Monat 7): Wintersemester-Beginn = 15% neue Studenten
-    // - Februar (Monat 1): Sommersemester-Beginn = 8% neue Studenten  
-    // - Andere Monate: Normale Fluktuation = 2%
-    let newUsersMultiplier = currentMonth === 7 ? 0.15 : // August: Hauptregistrierungszeit
-                           currentMonth === 1 ? 0.08 : // Februar: Zweite Registrierungszeit
-                           0.02; // Andere Monate: Minimale Registrierungen
-    
-    // ===== REAL DATA ONLY - NO ESTIMATED USERS =====
-    
-    // Don't hallucinate new user numbers - only report what we actually know
-    // If we don't have real registration data, mark as unavailable
-    const estimatedNewUsersThisMonth = null; // No real data available
-    
+    // ===== ZEITLICHE METRIKEN BERECHNEN ===== 
     console.warn('⚠️ New user statistics not available - would require real registration tracking');
     
     // ===== RÜCKGABE-OBJEKT ZUSAMMENSTELLEN =====
-    
     // Vollständiges Statistik-Objekt mit allen relevanten Daten zurückgeben
     return {
       // Gesamtzahlen
@@ -287,9 +263,7 @@ const getUserStatisticsWithLdapUtils = async () => {
         studenten: totalStudenten,             // Anzahl Studenten
         angestellte: totalAngestellte,         // Anzahl Angestellte (inkl. wissenschaftliche)
         gastdozenten: totalGastdozenten,       // Anzahl Gastdozenten
-        mitarbeiter: totalAngestellte,         // Legacy-Kompatibilität (= Angestellte)
-        dozenten: null,                        // Don't estimate - requires real data
-        itsz: totalITSZ                        // ITSZ-Team-Mitglieder
+        mitarbeiter: totalAngestellte,         // Legacy-Kompatibilität (= Angestellte)                     // ITSZ-Team-Mitglieder
       },
       
       // Metadaten
@@ -321,8 +295,6 @@ const getUserStatisticsWithLdapUtils = async () => {
         angestellte: 0,
         gastdozenten: 0,
         mitarbeiter: 0,
-        dozenten: 0,
-        itsz: 0
       },
       
       // Fehlermetadaten
@@ -529,8 +501,6 @@ const getUserStatistics = async () => {
         angestellte: 0,    // Angestellten-Anzahl
         gastdozenten: 0,   // Gastdozenten-Anzahl
         mitarbeiter: 0,    // Mitarbeiter-Anzahl (Legacy-Kompatibilität)
-        dozenten: 0,       // Dozenten-Anzahl
-        itsz: 0           // ITSZ-Team-Anzahl
       },
       
       // Metadaten für Debugging und Status-Tracking
@@ -1604,5 +1574,6 @@ export {
   getHealthStatus,
   getWireGuardConfig,
   getCircuitBreakerStatus,
-  resetCircuitBreaker
+  resetCircuitBreaker,
+  getWireGuardServiceInfo
 };

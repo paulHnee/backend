@@ -14,6 +14,7 @@
  * @version 1.0.0
  */
 
+
 import express from 'express';
 import { 
   getPortalStats,
@@ -22,12 +23,19 @@ import {
   getHealthStatus,
   getWireGuardConfig,
   getCircuitBreakerStatus,
-  resetCircuitBreaker
+  resetCircuitBreaker,
+  getWireGuardServiceInfo
 } from '../controllers/monitoringController.js';
 import { verifyToken } from '../middleware/authMiddleware.js';
 import { logSecurityEvent } from '../utils/securityLogger.js';
 
 const router = express.Router();
+
+/**
+ * WireGuard Service-Info (OPNsense)
+ * Authentifizierter Endpunkt
+ */
+router.get('/wireguard/service/info', verifyToken, getWireGuardServiceInfo);
 
 // ===== ÖFFENTLICHE ENDPUNKTE (ohne Authentifizierung) =====
 

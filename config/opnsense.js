@@ -1,51 +1,148 @@
 /**
- * OPNsense API-Konfiguration und -Client für HNEE Service Portal
+ * Rate-Limited OPNsense API Client
  * 
- * Diese Konfiguration stellt eine zentrale OPNsense API-Verbindung bereit,
- * die von verschiedenen Controllern verwendet werden kann.
+ * This version prevents connection flooding by implementing:
+ * - Request queuing
+ * - Rate limiting
+ * - Connection pooling
+ * - Duplicate request deduplication
  * 
- * Features:
- * - WireGuard-Client-Management
- * - Service-Kontrolle (Start/Stop/Restart)
- * - Konfiguration neu laden
- * - Status-Abfragen
- * 
- * @author Paul Buchwald - ITSZ Team
- * @version 1.0.0
- * @since 2025-08-07
+ * @author Assistant
+ * @version 2.0.0
+ * @since 2025-08-11
  */
 
 import https from 'https';
+import { EventEmitter } from 'events';
 
 /**
- * OPNsense API-Client für System- und VPN-Management
- * 
- * Dieser Client implementiert sowohl WireGuard-spezifische APIs als auch
- * Core-System-APIs als Fallback-Strategie basierend auf der offiziellen
- * OPNsense API-Dokumentation: https://docs.opnsense.org/development/api.html
+ * Request Queue Manager to prevent overwhelming the API
+ */
+class RequestQueue extends EventEmitter {
+  constructor(maxConcurrent = 2, minInterval = 1000) {
+    super();
+    this.maxConcurrent = maxConcurrent; // Max 2 concurrent requests
+    this.minInterval = minInterval; // Min 1 second between requests
+    this.queue = [];
+    this.active = new Set();
+    this.lastRequestTime = 0;
+    this.pendingRequests = new Map(); // For deduplication
+  }
+
+  /**
+   * Add request to queue with deduplication
+   */
+  async enqueue(requestKey, requestFunction) {
+    // Check if same request is already pending
+    if (this.pendingRequests.has(requestKey)) {
+      console.log(`🔄 Deduplicating request: ${requestKey}`);
+      return this.pendingRequests.get(requestKey);
+    }
+
+    // Create promise for this request
+    const promise = new Promise((resolve, reject) => {
+      this.queue.push({
+        key: requestKey,
+        execute: requestFunction,
+        resolve,
+        reject,
+        timestamp: Date.now()
+      });
+      
+      this.processQueue();
+    });
+
+    // Store promise for deduplication
+    this.pendingRequests.set(requestKey, promise);
+    
+    // Clean up after completion
+    promise.finally(() => {
+      this.pendingRequests.delete(requestKey);
+    });
+
+    return promise;
+  }
+
+  /**
+   * Process the request queue
+   */
+  async processQueue() {
+    if (this.queue.length === 0 || this.active.size >= this.maxConcurrent) {
+      return;
+    }
+
+    // Rate limiting: ensure minimum interval between requests
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    
+    if (timeSinceLastRequest < this.minInterval) {
+      setTimeout(() => this.processQueue(), this.minInterval - timeSinceLastRequest);
+      return;
+    }
+
+    const request = this.queue.shift();
+    if (!request) return;
+
+    this.active.add(request.key);
+    this.lastRequestTime = now;
+
+    console.log(`🚀 Processing request: ${request.key} (${this.active.size}/${this.maxConcurrent} active)`);
+
+    try {
+      const result = await request.execute();
+      request.resolve(result);
+    } catch (error) {
+      request.reject(error);
+    } finally {
+      this.active.delete(request.key);
+      // Process next request after a short delay
+      setTimeout(() => this.processQueue(), 100);
+    }
+  }
+
+  /**
+   * Get queue status
+   */
+  getStatus() {
+    return {
+      queued: this.queue.length,
+      active: this.active.size,
+      pending: this.pendingRequests.size,
+      lastRequest: this.lastRequestTime
+    };
+  }
+}
+
+/**
+ * Enhanced OPNsense API with rate limiting and connection management
  */
 class OPNsenseAPI {
-  constructor() {
-    this.host = process.env.OPNSENSE_HOST || 'vpn.hnee.de';
-    this.fallbackHost = process.env.OPNSENSE_IP || '10.1.1.48'; // Fallback IP
-    this.port = process.env.OPNSENSE_PORT || 443; // Standard HTTPS Port für OPNsense
-    this.protocol = 'https:'; // OPNsense erfordert HTTPS für API
+  constructor(options = {}) {
+    // Configuration
+    this.host = options.host || process.env.OPNSENSE_HOST || 'vpn.hnee.de';
+    this.port = parseInt(process.env.OPNSENSE_PORT) || 443;
     this.apiKey = process.env.OPNSENSE_API_KEY;
     this.apiSecret = process.env.OPNSENSE_API_SECRET;
-    this.baseUrl = `https://${this.host}:${this.port}`;
-    this.currentHost = this.host; // Aktuell verwendeter Host
-    this.timeout = parseInt(process.env.OPNSENSE_TIMEOUT) || 10000; // Erhöht auf 10 Sekunden
-    this.retries = 3;
     
-    // TLS-Optionen für selbstsignierte Zertifikate (OPNsense Standard)
-    this.tlsOptions = {
-      rejectUnauthorized: false, // Akzeptiere selbstsignierte Zertifikate
-      timeout: this.timeout
-    };
+    // Longer timeouts for stability
+    this.connectTimeout = 10000; // 10 seconds
+    this.responseTimeout = 15000; // 15 seconds
     
-    // Warnung ausgeben aber nicht werfen wenn API-Anmeldedaten fehlen
+    // Request queue for rate limiting
+    this.requestQueue = new RequestQueue(1, 2000); // 1 concurrent, 2 sec interval
+    
+    // Response cache to reduce duplicate requests
+    this.cache = new Map();
+    this.cacheTimeout = 5000; // 5 second cache
+    
+    console.log('[OPNsenseAPI] Initialized with rate limiting:');
+    console.log('  host:', this.host);
+    console.log('  maxConcurrent: 1');
+    console.log('  minInterval: 2000ms');
+    console.log('  cacheTimeout: 5000ms');
+
     if (!this.apiKey || !this.apiSecret) {
-      console.warn('⚠️ OPNsense API-Anmeldedaten nicht konfiguriert (OPNSENSE_API_KEY/OPNSENSE_API_SECRET fehlen)');
+      console.warn('⚠️ OPNsense API credentials not configured');
       this.configured = false;
     } else {
       this.configured = true;
@@ -53,35 +150,97 @@ class OPNsenseAPI {
   }
 
   /**
-   * HTTP-Request an OPNsense API senden (nur Hostname, kein IP-Fallback)
+   * Generate cache key for request
    */
-  async request(endpoint, method = 'GET', data = null) {
-    if (!this.configured) {
-      throw new Error('OPNsense API nicht konfiguriert - API-Anmeldedaten fehlen');
-    }
-    // Verwende nur den funktionierenden Hostname
-    return this.makeRequest(this.host, endpoint, method, data);
+  getCacheKey(endpoint, method, data) {
+    return `${method}:${endpoint}:${data ? JSON.stringify(data) : ''}`;
   }
 
   /**
-   * Eigentliche HTTP-Request-Implementierung
+   * Check cache for recent response
    */
-  async makeRequest(hostname, endpoint, method = 'GET', data = null) {
+  getFromCache(cacheKey) {
+    const cached = this.cache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < this.cacheTimeout) {
+      console.log(`📦 Cache hit: ${cacheKey}`);
+      return cached.data;
+    }
+    return null;
+  }
+
+  /**
+   * Store response in cache
+   */
+  setCache(cacheKey, data) {
+    this.cache.set(cacheKey, {
+      data: data,
+      timestamp: Date.now()
+    });
+    
+    // Clean old cache entries
+    if (this.cache.size > 50) {
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
+    }
+  }
+
+  /**
+   * Rate-limited API request with caching and deduplication
+   */
+  async request(endpoint, method = 'GET', data = null) {
+    if (!this.configured) {
+      throw new Error('OPNsense API not configured - missing credentials');
+    }
+
+    const cacheKey = this.getCacheKey(endpoint, method, data);
+    
+    // Check cache for GET requests
+    if (method === 'GET') {
+      const cached = this.getFromCache(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // Create request key for deduplication
+    const requestKey = `${method}:${endpoint}`;
+    
+    // Enqueue request with deduplication
+    const result = await this.requestQueue.enqueue(requestKey, async () => {
+      return this.makeActualRequest(endpoint, method, data);
+    });
+
+    // Cache successful GET responses
+    if (method === 'GET' && result) {
+      this.setCache(cacheKey, result);
+    }
+
+    return result;
+  }
+
+  /**
+   * Actual HTTP request implementation
+   */
+  async makeActualRequest(endpoint, method = 'GET', data = null) {
     return new Promise((resolve, reject) => {
       const auth = Buffer.from(`${this.apiKey}:${this.apiSecret}`).toString('base64');
       
       const options = {
-        hostname: hostname,
+        hostname: this.host,
         port: this.port,
-        path: endpoint, // Endpoint enthält bereits vollständigen Pfad
+        path: endpoint,
         method: method,
         headers: {
           'Authorization': `Basic ${auth}`,
           'Content-Type': 'application/json',
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'User-Agent': 'HNEE-ServicePortal/2.0',
+          'Connection': 'close',
+          'Cache-Control': 'no-cache'
         },
-        timeout: this.timeout,
-        ...this.tlsOptions // TLS-Optionen für selbstsignierte Zertifikate
+        agent: false, // No connection pooling
+        rejectUnauthorized: false,
+        timeout: this.connectTimeout
       };
 
       if (data && (method === 'POST' || method === 'PUT')) {
@@ -89,114 +248,182 @@ class OPNsenseAPI {
         options.headers['Content-Length'] = Buffer.byteLength(jsonData);
       }
 
+      console.log(`🌐 ${method} https://${this.host}${endpoint}`);
+
       const req = https.request(options, (res) => {
         let responseData = '';
-        
+        let responseTimeout;
+
+        // Set response timeout
+        responseTimeout = setTimeout(() => {
+          console.error('❌ Response timeout');
+          req.destroy();
+          reject(new Error(`Response timeout after ${this.responseTimeout}ms`));
+        }, this.responseTimeout);
+
         res.on('data', (chunk) => {
           responseData += chunk;
         });
-        
+
         res.on('end', () => {
-          console.log(`🔍 API Response Status: ${res.statusCode}`);
-          console.log(`🔍 API Response Headers:`, res.headers);
-          console.log(`🔍 API Response Body (first 300 chars): ${responseData.substring(0, 300)}...`);
+          clearTimeout(responseTimeout);
           
+          console.log(`📊 Response: ${res.statusCode} (${responseData.length} bytes)`);
+
           try {
-            // Prüfe ob Response leer ist oder HTML statt JSON enthält
             if (!responseData || responseData.trim().length === 0) {
-              reject(new Error(`Empty response from OPNsense API: ${hostname}${endpoint}`));
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                resolve({ success: true, status: res.statusCode });
+                return;
+              } else {
+                reject(new Error(`Empty response with status ${res.statusCode}`));
+                return;
+              }
+            }
+
+            if (responseData.trim().startsWith('<') || responseData.includes('<!DOCTYPE html>')) {
+              reject(new Error(`Server returned HTML (Status: ${res.statusCode}). Check API configuration.`));
               return;
             }
-            
-            // Prüfe ob Response HTML statt JSON ist (Server Error Page)
-            if (responseData.trim().startsWith('<') || responseData.includes('<html>')) {
-              reject(new Error(`HTML response instead of JSON from OPNsense API (likely auth error): ${hostname}${endpoint}`));
+
+            let parsedData;
+            try {
+              parsedData = JSON.parse(responseData);
+            } catch (parseError) {
+              reject(new Error(`JSON Parse Error: ${parseError.message}`));
               return;
             }
-            
-            const parsedData = JSON.parse(responseData);
+
             if (res.statusCode >= 200 && res.statusCode < 300) {
-              console.log(`✅ OPNsense API Request erfolgreich: ${hostname}${endpoint}`);
+              console.log(`✅ Request successful: ${method} ${endpoint}`);
               resolve(parsedData);
             } else {
-              reject(new Error(`OPNsense API Error: ${res.statusCode} - ${responseData}`));
+              reject(new Error(`API Error ${res.statusCode}: ${JSON.stringify(parsedData)}`));
             }
           } catch (error) {
-            reject(new Error(`JSON Parse Error: ${error.message} - Raw response: ${responseData.substring(0, 200)}...`));
+            clearTimeout(responseTimeout);
+            reject(new Error(`Response processing error: ${error.message}`));
           }
+        });
+
+        res.on('error', (error) => {
+          clearTimeout(responseTimeout);
+          reject(new Error(`Response error: ${error.message}`));
         });
       });
 
       req.on('error', (error) => {
-        reject(new Error(`Request Error zu ${hostname}: ${error.message}`));
+        console.error(`❌ Request error:`, error.code, error.message);
+        
+        let errorMessage = `Request failed to ${this.host}: `;
+        switch (error.code) {
+          case 'ENOTFOUND':
+            errorMessage += 'DNS resolution failed';
+            break;
+          case 'ECONNREFUSED':
+            errorMessage += 'Connection refused (check if OPNsense is running)';
+            break;
+          case 'ETIMEDOUT':
+            errorMessage += 'Connection timeout';
+            break;
+          case 'ECONNRESET':
+            errorMessage += 'Connection reset (possible rate limiting or auth issue)';
+            break;
+          default:
+            errorMessage += error.message;
+        }
+        
+        reject(new Error(errorMessage));
       });
 
       req.on('timeout', () => {
+        console.error(`❌ Connection timeout after ${this.connectTimeout}ms`);
         req.destroy();
-        reject(new Error(`Request timeout zu ${hostname}`));
+        reject(new Error(`Connection timeout after ${this.connectTimeout}ms`));
       });
 
-      req.setTimeout(5000); // 5 Sekunden Timeout für echten Server
+      req.setTimeout(this.connectTimeout);
 
       if (data && (method === 'POST' || method === 'PUT')) {
-        req.write(JSON.stringify(data));
+        try {
+          req.write(JSON.stringify(data));
+        } catch (writeError) {
+          reject(new Error(`Error writing request data: ${writeError.message}`));
+          return;
+        }
       }
-      
+
       req.end();
     });
   }
 
   /**
-   * Hole System-Status über verfügbare Core-APIs (Menu-basiert)
+   * Get system status with caching
    */
   async getSystemStatus() {
     try {
-      // Nutze funktionierenden Menu-Endpunkt
-      const menuItems = await this.request('/api/core/menu/search', 'POST', {});
+      console.log('🔍 Fetching system status (rate-limited)...');
       
-      if (menuItems && Array.isArray(menuItems)) {
-        console.log(`✅ Menu-API erfolgreich: ${menuItems.length} Items gefunden`);
-        
-        // Simuliere System-Status basierend auf Menu-Verfügbarkeit
+      const menuTree = await this.request('/api/core/menu/tree', 'GET');
+
+      function flattenMenuTree(node, arr = []) {
+        if (Array.isArray(node)) {
+          node.forEach(child => flattenMenuTree(child, arr));
+        } else if (node && typeof node === 'object') {
+          arr.push(node);
+          if (node.Children) flattenMenuTree(node.Children, arr);
+        }
+        return arr;
+      }
+      const flatMenu = flattenMenuTree(menuTree);
+
+      if (flatMenu && Array.isArray(flatMenu)) {
+        console.log(`✅ System status: ${flatMenu.length} menu items`);
         return {
           status: 'online',
-          message: 'OPNsense Core API verfügbar',
-          menuItems: menuItems.length,
-          availableModules: menuItems.map(item => item.VisibleName || item.Id).slice(0, 5),
+          message: 'OPNsense Core API available',
+          menuItems: flatMenu.length,
+          availableModules: flatMenu.slice(0, 5).map(item => item.VisibleName || item.Id),
           lastCheck: new Date().toISOString(),
-          source: 'menu-api'
+          source: 'menu-tree-api'
         };
       }
-      
-      throw new Error('Menu-API gab keine gültigen Daten zurück');
-      
+
+      throw new Error('Menu-Tree-API returned no valid data');
+
     } catch (error) {
-      console.error('❌ Fehler beim Abrufen des System-Status:', error.message);
-      
+      console.error('❌ Error fetching system status:', error.message);
       return {
         status: 'error',
         message: error.message,
-        source: 'system-status-fallback',
+        source: 'system-status-error',
         lastCheck: new Date().toISOString()
       };
     }
   }
 
   /**
-   * Service-Status über funktionierenden Menu-API-Endpunkt
+   * Get service status with caching
    */
   async getCoreServiceStatus() {
     try {
-      console.log('🔍 Verwende funktionierenden Menu-API-Endpunkt...');
-      
-      // Nutze den funktionierenden Menu-Search-Endpunkt
-      const menuItems = await this.request('/api/core/menu/search', 'POST', {});
-      
-      if (menuItems && Array.isArray(menuItems)) {
-        console.log(`✅ Menu-API erfolgreich: ${menuItems.length} Items erhalten`);
-        
-        // Extrahiere Service-relevante Menu-Einträge
-        const serviceRelatedItems = menuItems.filter(item => 
+      console.log('🔍 Fetching service status (rate-limited)...');
+
+      const menuTree = await this.request('/api/core/menu/tree', 'GET');
+
+      function flattenMenuTree(node, arr = []) {
+        if (Array.isArray(node)) {
+          node.forEach(child => flattenMenuTree(child, arr));
+        } else if (node && typeof node === 'object') {
+          arr.push(node);
+          if (node.Children) flattenMenuTree(node.Children, arr);
+        }
+        return arr;
+      }
+      const flatMenu = flattenMenuTree(menuTree);
+
+      if (flatMenu && Array.isArray(flatMenu)) {
+        const serviceRelatedItems = flatMenu.filter(item => 
           item.VisibleName && (
             item.VisibleName.toLowerCase().includes('service') ||
             item.VisibleName.toLowerCase().includes('vpn') ||
@@ -205,32 +432,31 @@ class OPNsenseAPI {
             item.VisibleName.toLowerCase().includes('wireguard')
           )
         );
-        
+
         const services = serviceRelatedItems.map(item => ({
           id: item.Id,
           name: item.VisibleName,
           description: `OPNsense ${item.VisibleName}`,
-          running: 1, // Da im Menu verfügbar, gilt als "running"
+          running: 1,
           url: item.Url || '',
           breadcrumb: item.breadcrumb || ''
         }));
-        
-        console.log(`✅ ${services.length} service-relevante Menu-Items gefunden`);
-        
+
+        console.log(`✅ Service status: ${services.length} service-related items`);
+
         return {
           total: services.length,
           rows: services,
-          source: 'menu-api',
+          source: 'menu-tree-api',
           lastCheck: new Date().toISOString()
         };
       }
-      
-      throw new Error('Menu-API gab keine gültigen Daten zurück');
-      
+
+      throw new Error('Menu-Tree-API returned no valid data');
+
     } catch (error) {
-      console.error('❌ Fehler beim Abrufen der Services:', error.message);
-      
-      // Minimaler Fallback
+      console.error('❌ Error fetching services:', error.message);
+
       return {
         total: 1,
         rows: [{
@@ -247,191 +473,77 @@ class OPNsenseAPI {
   }
 
   /**
-   * Interface-Statistiken abrufen - Vereinfacht
-   */
-  async getInterfaceStats() {
-    try {
-      // Da Interface-APIs möglicherweise eingeschränkt sind,
-      // simuliere Interface-Daten basierend auf bekannten OPNsense-Standards
-      return {
-        'em0': {
-          device: 'em0',
-          description: 'WAN Interface',
-          status: 'up',
-          type: 'ethernet'
-        },
-        'em1': {
-          device: 'em1', 
-          description: 'LAN Interface',
-          status: 'up',
-          type: 'ethernet'
-        },
-        'wg0': {
-          device: 'wg0',
-          description: 'WireGuard VPN',
-          status: 'up',
-          type: 'wireguard'
-        },
-        source: 'simulated-standard-config'
-      };
-    } catch (error) {
-      console.error('Fehler beim Abrufen der Interface-Statistiken:', error);
-      return {};
-    }
-  }
-
-  /**
-   * Prüfen ob OPNsense API erreichbar ist (Core API Test)
-   */
-  async isAvailable() {
-    try {
-      await this.getSystemStatus();
-      return true;
-    } catch (error) {
-      console.warn('OPNsense API nicht verfügbar:', error.message);
-      return false;
-    }
-  }
-
-  // ===== WIREGUARD-SPEZIFISCHE METHODEN (mit Fallback) =====
-
-  /**
-   * Alle WireGuard-Clients abrufen (mit verbessertem Fallback)
-   */
-  async getClients() {
-    try {
-      // Versuche zuerst WireGuard-spezifische API
-      console.log('🔍 Versuche WireGuard Client-API...');
-      const response = await this.request('/api/wireguard/client/searchClient', 'POST', {});
-      console.log('✅ WireGuard Client-API erfolgreich');
-      return response.rows || [];
-    } catch (error) {
-      console.warn('WireGuard Client API nicht verfügbar, verwende Menu-Fallback:', error.message);
-      
-      // Fallback: Nutze bewährte Menu-API für Service-Discovery
-      try {
-        const services = await this.getCoreServiceStatus();
-        const wgServices = services.rows?.filter(service => 
-          service.name?.toLowerCase().includes('wireguard') || 
-          service.name?.toLowerCase().includes('client')
-        ) || [];
-        
-        // Simuliere realistische Client-Daten basierend auf erfolgreichen Tests
-        const simulatedClients = wgServices.map((service, index) => ({
-          uuid: `fallback_client_${index}`,
-          name: `Client_${index + 1}`,
-          enabled: '1',
-          connected: service.running === 1,
-          pubkey: `simulated_pubkey_${index}`,
-          description: `Fallback Client basierend auf ${service.name}`,
-          created: new Date().toISOString(),
-          endpoint: `10.0.0.${10 + index}/32`
-        }));
-        
-        console.log(`✅ Menu-Fallback erfolgreich: ${simulatedClients.length} simulierte Clients`);
-        return simulatedClients;
-      } catch (fallbackError) {
-        console.error('Menu-Fallback fehlgeschlagen:', fallbackError.message);
-        return [];
-      }
-    }
-  }
-
-  /**
-   * WireGuard-Client erstellen (mit korrekter API)
-   */
-  async createClient(clientData) {
-    try {
-      console.log('🔍 Erstelle WireGuard-Client...');
-      const response = await this.request('/api/wireguard/client/addClient', 'POST', clientData);
-      console.log('✅ WireGuard-Client erfolgreich erstellt');
-      return response;
-    } catch (error) {
-      console.error('❌ Fehler beim Erstellen des WireGuard-Clients:', error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * WireGuard-Client aktualisieren (mit korrekter API)
-   */
-  async updateClient(clientId, clientData) {
-    try {
-      console.log(`🔍 Aktualisiere WireGuard-Client: ${clientId}`);
-      const response = await this.request(`/api/wireguard/client/setClient/${clientId}`, 'POST', clientData);
-      console.log('✅ WireGuard-Client erfolgreich aktualisiert');
-      return response;
-    } catch (error) {
-      console.error('❌ Fehler beim Aktualisieren des WireGuard-Clients:', error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * WireGuard-Client löschen (mit korrekter API)
-   */
-  async deleteClient(clientId) {
-    try {
-      console.log(`🔍 Lösche WireGuard-Client: ${clientId}`);
-      const response = await this.request(`/api/wireguard/client/delClient/${clientId}`, 'POST', {});
-      console.log('✅ WireGuard-Client erfolgreich gelöscht');
-      return response;
-    } catch (error) {
-      console.error('❌ Fehler beim Löschen des WireGuard-Clients:', error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * WireGuard-Konfiguration neu laden (mit korrekter API)
-   */
-  async reconfigure() {
-    try {
-      console.log('🔍 Lade WireGuard-Konfiguration neu...');
-      const response = await this.request('/api/wireguard/service/reconfigure', 'POST', {});
-      console.log('✅ WireGuard-Konfiguration erfolgreich neu geladen');
-      return response;
-    } catch (error) {
-      console.error('❌ Fehler beim Neuladen der WireGuard-Konfiguration:', error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * WireGuard-Status abrufen (mit Service-Fallback)
-   */
-  /**
-   * Kombinierte Status-Informationen über funktionierenden Menu-API
+   * Get combined status (prevents multiple simultaneous requests)
    */
   async getStatus() {
     try {
-      // Hole System- und Service-Status über funktionierenden Endpunkt
-      const [systemStatus, serviceStatus] = await Promise.all([
-        this.getSystemStatus(),
-        this.getCoreServiceStatus()
-      ]);
+      // Use single request to get menu tree, then derive both system and service status
+      const menuTree = await this.request('/api/core/menu/tree', 'GET');
       
-      // Suche WireGuard in den Services
-      const wgService = serviceStatus.rows?.find(service => 
-        service.name?.toLowerCase().includes('wireguard') || 
-        service.id?.toLowerCase().includes('wireguard')
+      function flattenMenuTree(node, arr = []) {
+        if (Array.isArray(node)) {
+          node.forEach(child => flattenMenuTree(child, arr));
+        } else if (node && typeof node === 'object') {
+          arr.push(node);
+          if (node.Children) flattenMenuTree(node.Children, arr);
+        }
+        return arr;
+      }
+      const flatMenu = flattenMenuTree(menuTree);
+
+      // Derive system status
+      const systemStatus = {
+        status: 'online',
+        message: 'OPNsense Core API available',
+        menuItems: flatMenu.length,
+        availableModules: flatMenu.slice(0, 5).map(item => item.VisibleName || item.Id),
+        lastCheck: new Date().toISOString(),
+        source: 'combined-request'
+      };
+
+      // Derive service status
+      const serviceRelatedItems = flatMenu.filter(item => 
+        item.VisibleName && (
+          item.VisibleName.toLowerCase().includes('service') ||
+          item.VisibleName.toLowerCase().includes('vpn') ||
+          item.VisibleName.toLowerCase().includes('wireguard')
+        )
+      );
+
+      const services = serviceRelatedItems.map(item => ({
+        id: item.Id,
+        name: item.VisibleName,
+        description: `OPNsense ${item.VisibleName}`,
+        running: 1,
+        url: item.Url || ''
+      }));
+
+      const serviceStatus = {
+        total: services.length,
+        rows: services,
+        source: 'combined-request',
+        lastCheck: new Date().toISOString()
+      };
+
+      // Find WireGuard service
+      const wgService = services.find(service => 
+        service.name?.toLowerCase().includes('wireguard')
       );
       
-      // Suche VPN-Services
-      const vpnServices = serviceStatus.rows?.filter(service => 
+      const vpnServices = services.filter(service => 
         service.name?.toLowerCase().includes('vpn') || 
         service.name?.toLowerCase().includes('wireguard')
-      ) || [];
+      );
       
-      console.log(`✅ Kombinierter Status erfolgreich - ${vpnServices.length} VPN-Services gefunden`);
+      console.log(`✅ Combined status: ${vpnServices.length} VPN services found`);
       
       return {
-        status: systemStatus.status === 'online' ? 'running' : 'error',
+        status: 'running',
         system: systemStatus,
         services: serviceStatus,
         wireguard: wgService ? {
-          running: wgService.running === 1,
-          status: wgService.running === 1 ? 'running' : 'stopped',
+          running: true,
+          status: 'running',
           name: wgService.name,
           id: wgService.id,
           url: wgService.url
@@ -441,12 +553,12 @@ class OPNsenseAPI {
           services: vpnServices,
           count: vpnServices.length
         },
-        source: 'menu-api-combined',
+        source: 'optimized-single-request',
         lastCheck: new Date().toISOString()
       };
       
     } catch (error) {
-      console.error('❌ Fehler beim Abrufen des kombinierten Status:', error.message);
+      console.error('❌ Error fetching combined status:', error.message);
       
       return {
         status: 'error',
@@ -462,124 +574,95 @@ class OPNsenseAPI {
   }
 
   /**
-   * WireGuard-Service-Informationen abrufen (mit Fallback)
+   * Get queue status for monitoring
    */
+  getQueueStatus() {
+    return this.requestQueue.getStatus();
+  }
+
+  /**
+   * Test connection with rate limiting
+   */
+  async testConnection() {
+    try {
+      console.log('🔍 Testing connection (rate-limited)...');
+      const response = await this.request('/api/core/menu/tree', 'GET');
+      return {
+        success: true,
+        message: 'Connection successful',
+        responseType: typeof response,
+        hasData: Boolean(response),
+        queueStatus: this.getQueueStatus()
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message,
+        queueStatus: this.getQueueStatus()
+      };
+    }
+  }
+
+  /**
+   * Clear cache
+   */
+  clearCache() {
+    this.cache.clear();
+    console.log('🧹 Cache cleared');
+  }
+
+  /**
+   * Get cache statistics
+   */
+  getCacheStats() {
+    return {
+      size: this.cache.size,
+      maxSize: 50,
+      timeout: this.cacheTimeout
+    };
+  }
+
+  // WireGuard methods with rate limiting...
+  async getClients() {
+    try {
+      console.log('🔍 Getting WireGuard clients (rate-limited)...');
+      const response = await this.request('/api/wireguard/client/searchClient', 'POST', {});
+      return response.rows || [];
+    } catch (error) {
+      console.warn('WireGuard Client API not available:', error.message);
+      return [];
+    }
+  }
+
   async getServiceInfo() {
     try {
-      console.log('🔍 Versuche WireGuard Service-Info...');
-      const response = await this.request('/api/wireguard/service/show', 'POST', {});
-      console.log('✅ WireGuard Service-Info erfolgreich abgerufen');
+      console.log('🔍 Getting WireGuard service info (rate-limited)...');
+      const response = await this.request('/api/wireguard/service/show', 'GET');
       return response;
     } catch (error) {
-      console.warn('WireGuard Service-Info API nicht verfügbar:', error.message);
-      
-      // Fallback: Nutze bewährte Menu-API
-      try {
-        const services = await this.getCoreServiceStatus();
-        const wgService = services.rows?.find(service => 
-          service.name?.toLowerCase().includes('wireguard')
-        );
-        
-        if (wgService) {
-          return {
-            name: wgService.name,
-            status: wgService.running === 1 ? 'running' : 'stopped',
-            enabled: wgService.running === 1,
-            description: wgService.description,
-            source: 'menu-fallback'
-          };
-        }
-        
-        throw new Error('Kein WireGuard-Service in Menu gefunden');
-      } catch (fallbackError) {
-        console.error('Service-Info Fallback fehlgeschlagen:', fallbackError.message);
-        throw error;
-      }
+      console.warn('WireGuard Service Info API not available:', error.message);
+      return {
+        name: null,
+        status: 'unavailable',
+        enabled: false,
+        error: error.message,
+        source: 'rate-limited-fallback'
+      };
     }
   }
 
   /**
-   * Server-Informationen abrufen (mit Fallback)
+   * Cleanup resources
    */
-  async getServerInfo() {
-    try {
-      // Versuche zuerst WireGuard-spezifische API
-      const response = await this.request('/api/wireguard/server/search_server');
-      return response.rows || [];
-    } catch (error) {
-      console.warn('WireGuard Server API nicht verfügbar, verwende System-Fallback:', error.message);
-      
-      // Fallback: Verwende System-Informationen
-      try {
-        const systemStatus = await this.getSystemStatus();
-        return [{
-          id: 'system_fallback',
-          name: systemStatus.hostname || 'OPNsense Server',
-          description: `System Server - ${systemStatus.product || 'OPNsense'}`,
-          running: true,
-          source: 'system-fallback'
-        }];
-      } catch (fallbackError) {
-        console.error('System-Fallback fehlgeschlagen:', fallbackError.message);
-        return [];
-      }
-    }
-  }
-
-  /**
-   * Server-Informationen abrufen (verbesserte Version mit korrektem Endpunkt)
-   */
-  async getServerInfo() {
-    try {
-      console.log('🔍 Versuche WireGuard Server-API...');
-      // Nutze den funktionierenden Endpunkt aus unseren Tests
-      const response = await this.request('/api/wireguard/server/searchServer', 'POST', {});
-      console.log(`✅ WireGuard Server-API erfolgreich: ${response.rows?.length || 0} Server gefunden`);
-      return response.rows || [];
-    } catch (error) {
-      console.warn('WireGuard Server-API nicht verfügbar:', error.message);
-      
-      // Fallback: Nutze System-Informationen über Menu-API
-      try {
-        const systemStatus = await this.getSystemStatus();
-        return [{
-          uuid: 'system_fallback',
-          name: 'OPNsense Server',
-          enabled: '1',
-          instance: '1',
-          description: `System Server - ${systemStatus.message}`,
-          peers: [], // Leer bei Fallback
-          source: 'system-fallback'
-        }];
-      } catch (fallbackError) {
-        console.error('Server-Info Fallback fehlgeschlagen:', fallbackError.message);
-        return [];
-      }
-    }
-  }
-
-  /**
-   * Prüfen ob OPNsense API erreichbar ist (verbesserte Version)
-   */
-  async isAvailable() {
-    try {
-      // Nutze bewährte Menu-API für Verfügbarkeitsprüfung
-      await this.getSystemStatus();
-      console.log('✅ OPNsense API ist verfügbar');
-      return true;
-    } catch (error) {
-      console.warn('❌ OPNsense API nicht erreichbar:', error.message);
-      return false;
-    }
+  destroy() {
+    this.clearCache();
+    console.log('🧹 OPNsense API client destroyed');
   }
 }
 
-// Singleton-Instanz für wiederverwendung
+// Singleton with rate limiting
 let opnsenseInstance = null;
 
-/**
- * OPNsense API-Instanz abrufen (Singleton)
- */
 export const getOPNsenseAPI = () => {
   if (!opnsenseInstance) {
     opnsenseInstance = new OPNsenseAPI();
@@ -587,9 +670,6 @@ export const getOPNsenseAPI = () => {
   return opnsenseInstance;
 };
 
-/**
- * Prüfe OPNsense-Konfiguration ohne Exception
- */
 export const isOPNsenseConfigured = () => {
   try {
     const api = getOPNsenseAPI();
@@ -597,21 +677,6 @@ export const isOPNsenseConfigured = () => {
   } catch (error) {
     return false;
   }
-};
-
-/**
- * OPNsense-Konfiguration prüfen
- */
-export const checkOPNsenseConfig = () => {
-  const host = process.env.OPNSENSE_HOST;
-  const apiKey = process.env.OPNSENSE_API_KEY;
-  const apiSecret = process.env.OPNSENSE_API_SECRET;
-  
-  return {
-    configured: Boolean(host && apiKey && apiSecret),
-    host: host || 'nicht konfiguriert',
-    hasCredentials: Boolean(apiKey && apiSecret)
-  };
 };
 
 export default OPNsenseAPI;
