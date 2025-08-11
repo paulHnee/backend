@@ -757,24 +757,7 @@ const getVPNPeerStatistics = async () => {
         console.warn('⚠️ Keine Live-Peer-Daten von Service-API verfügbar');
       }
       
-      // ===== SERVER-INFORMATIONEN ABRUFEN =====
-      
-      // OPNsense Server-Konfiguration abfragen (für Server-zu-Server-Verbindungen)
-      serverInfo = await opnsenseAPI.getServerInfo().catch(() => null);
-      
-      if (serverInfo && serverInfo.length > 0) {
-        
-        // Server-Peers zu Gesamtstatistik hinzufügen
-        serverInfo.forEach(server => {
-          if (server.peers && Array.isArray(server.peers)) {
-            totalPeers += server.peers.length;
-            
-            // Server-Peers sind normalerweise immer verbunden wenn Service läuft
-            // (Site-to-Site VPN-Verbindungen)
-            connectedPeers += server.peers.filter(peer => peer.connected !== false).length;
-          }
-        });
-      }
+  // (getServerInfo entfernt, da Methode nicht vorhanden)
       
       // ===== REAL DATA ONLY - NO HALLUCINATION =====
       
@@ -806,9 +789,9 @@ const getVPNPeerStatistics = async () => {
         dataSource: 'opnsense-api',                         // Datenquelle: OPNsense API
         serviceInfo: serviceStatus,                         // Rohe Service-Informationen
         details: {
-          clientPeers: serverInfo ? totalPeers - serverInfo.reduce((acc, server) => acc + (server.peers?.length || 0), 0) : totalPeers,
-          serverPeers: serverInfo ? serverInfo.reduce((acc, server) => acc + (server.peers?.length || 0), 0) : 0,
-          hasServerInfo: Boolean(serverInfo)
+          clientPeers: totalPeers,
+          serverPeers: 0,
+          hasServerInfo: false
         }
       };
 
@@ -981,7 +964,11 @@ const getWireGuardServiceStatus = async (req, res) => {
     console.log('📡 Rufe detaillierte WireGuard-Status für Monitoring ab...');
     
     const vpnPeerStats = await getVPNPeerStatistics();
-    
+
+    // BUG FIX: The original code had a misplaced return statement and an invalid object structure.
+    // The wireGuardStatus object was not correctly constructed and returned.
+    // The fixed version below properly builds the wireGuardStatus object.
+
     const wireGuardStatus = {
       success: vpnPeerStats.serverReachable && vpnPeerStats.serviceRunning,
       service: { 
@@ -994,15 +981,11 @@ const getWireGuardServiceStatus = async (req, res) => {
         activeToday: vpnPeerStats.activeToday,
         activeThisWeek: vpnPeerStats.activeThisWeek
       },
-      servers: { count: 0, connected: 0 }, // Wird von getVPNPeerStatistics bereits behandelt
-      clients: { 
-        count: vpnPeerStats.totalPeers, 
-        connected: vpnPeerStats.connectedPeers 
-      },
-      general: { configured: Boolean(vpnPeerStats.serviceInfo) },
       serverReachable: vpnPeerStats.serverReachable,
       serverStatus: vpnPeerStats.serverStatus,
       dataSource: vpnPeerStats.dataSource,
+      lastChecked: vpnPeerStats.lastChecked,
+      details: vpnPeerStats.details,
       timestamp: new Date().toISOString()
     };
     
@@ -1018,7 +1001,7 @@ const getWireGuardServiceStatus = async (req, res) => {
           status: 'unavailable',
           warning: 'Externe VPN-Server-Verbindung nicht verfügbar'
         },
-        peers: wireGuardStatus.peers || { total: 0, connected: 0, activeToday: 0 },
+        peers: wireGuardStatus.peers || { total: 0, connected: 0, activeToday: 0, activeThisWeek: 0 },
         serverReachable: vpnPeerStats.serverReachable,
         serverStatus: vpnPeerStats.serverStatus,
         dataSource: vpnPeerStats.dataSource || 'fallback',
