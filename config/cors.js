@@ -9,13 +9,22 @@ const corsOptions = {
     origin: function(origin, callback) {
         const allowedOrigins = [
             // Frontend URLs (mit und ohne Port)
-            process.env.FRONTEND_URL || 'http://10.1.1.45',
-            'http://10.1.1.45:8080',  // Frontend Dev Server
-            'http://10.1.1.45:3000',  // Alternative Frontend Port
-            'http://10.1.1.45:5173', // Vite Dev Server
-            'http://localhost:8080',  // Local Frontend
-            'http://localhost:3000',  // Local Development
-            'http://localhost:5173',  // Local Vite
+            process.env.FRONTEND_URL || 'https://itsz.hnee.de',
+            'https://itsz.hnee.de:8080',  // Frontend Dev Server
+            'https://itsz.hnee.de:3000',  // Alternative Frontend Port
+            'https://itsz.hnee.de:5173', // Vite Dev Server
+            'http://localhost',          // Local nginx proxy
+            'http://localhost:80',       // Local nginx proxy explicit
+            'http://localhost:8080',     // Local Frontend
+            'http://localhost:3000',     // Local Development
+            'http://localhost:5173',     // Local Vite
+            'http://127.0.0.1',          // Localhost IPv4
+            'http://127.0.0.1:80',       // Localhost IPv4 explicit
+            // Legacy IP-based origins for backward compatibility
+            'http://10.1.1.45',
+            'http://10.1.1.45:8080',
+            'http://10.1.1.45:3000',
+            'http://10.1.1.45:5173',
             // Additional origins from env
             ...(process.env.ADDITIONAL_ORIGINS ? process.env.ADDITIONAL_ORIGINS.split(',') : []),
         ];

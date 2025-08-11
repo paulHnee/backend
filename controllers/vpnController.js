@@ -45,10 +45,24 @@ const execAsync = promisify(exec);
  * VPN-Limits basierend auf Benutzerrollen
  */
 const getVPNLimitForUser = (user) => {
+  // Debug-Ausgabe für Benutzerrollen
+  console.log(`🔍 VPN-Limit-Check für Benutzer: ${user.username}`);
+  console.log(`   - isITEmployee: ${user.isITEmployee}`);
+  console.log(`   - isEmployee: ${user.isEmployee}`);
+  console.log(`   - isStudent: ${user.isStudent}`);
+  console.log(`   - Gruppen: ${user.groups ? user.groups.join(', ') : 'keine'}`);
+  
   if (user.isITEmployee) return -1; // Unbegrenzt für IT-Mitarbeiter
   if (user.isEmployee) return 7;    // 7 für Mitarbeiter
   if (user.isStudent) return 5;     // 5 für Studenten
-  return 0; // Keine Berechtigung
+  
+  // Fallback: Geben Sie authentifizierten Benutzern zumindest ein Basic-Limit
+  if (user.username) {
+    console.log(`⚠️ Benutzer ${user.username} hat keine spezifische Rolle, gebe Basic-Limit (3 Verbindungen)`);
+    return 3; // Basic-Limit für alle authentifizierten Benutzer
+  }
+  
+  return 0; // Keine Berechtigung für nicht-authentifizierte Benutzer
 };
 
 /**

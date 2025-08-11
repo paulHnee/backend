@@ -176,8 +176,8 @@ export const mapUserRoles = (userGroups) => {
       roles.canViewReports = true;
     }
 
-    // Allgemeine Beschäftigte
-    if (groupLower === 'Mitarbeiter ' || groupLower === 'beschaeftigte') {
+    // Allgemeine Beschäftigte - verschiedene Variationen
+    if (groupLower === 'mitarbeiter' || groupLower === 'beschaeftigte' || groupLower === 'mitarbeiter ') {
       roles.isEmployee = true;
     }
 
