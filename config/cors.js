@@ -65,7 +65,9 @@ const corsOptions = {
             'http://127.0.0.1:80',       // Localhost IPv4 explicit
             // Legacy IP-based origins for backward compatibility
             'http://10.1.1.45',
+            'http://10.1.1.45:8080',
             'http://10.1.1.45:3000',
+            'https://10.1.1.45:8080',
             // Additional origins from env
             ...(process.env.ADDITIONAL_ORIGINS ? process.env.ADDITIONAL_ORIGINS.split(',') : []),
         ];

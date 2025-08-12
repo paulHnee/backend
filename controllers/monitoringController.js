@@ -1459,7 +1459,10 @@ const getPersonalVpnStats = async (req, res) => {
     if (req.user?.isITEmployee || req.user?.roles?.includes('IT-Mitarbeiter') || req.user?.isAdmin) {
       vpnLimit = -1; // IT-Mitarbeiter und Admins haben keine Limits
     }
-    
+    if (req.user?.isGuestLecturer || req.user?.roles?.includes('GastDozenten')) {
+      vpnLimit = 2; // Gäste haben ein Limit von 2 VPN-Verbindungen
+    }
+
     personalStats.limits = {
       maxConnections: vpnLimit,
       currentUsage: totalConnections,

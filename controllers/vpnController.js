@@ -33,8 +33,6 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import crypto from 'crypto';
-import fs from 'fs/promises';
-import path from 'path';
 import { logSecurityEvent } from '../utils/securityLogger.js';
 import { getOPNsenseAPI } from '../config/opnsense.js';
 import { logger } from '../utils/securityLogger.js';
@@ -58,6 +56,7 @@ const getVPNLimitForUser = (user) => {
   if (user.isITEmployee) return -1; // Unbegrenzt für IT-Mitarbeiter
   if (user.isEmployee) return 7;    // 7 für Mitarbeiter
   if (user.isStudent) return 5;     // 5 für Studenten
+  if (user.isGuestLecturer) return 2; // 2 für Gastdozenten
   if (user.username) {
     return 3; // Basic-Limit für alle authentifizierten Benutzer
   }

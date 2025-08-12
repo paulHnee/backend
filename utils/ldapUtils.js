@@ -166,6 +166,7 @@ export const mapUserRoles = (userGroups) => {
       roles.isEmployee = true;
       roles.canManageUsers = true;
       roles.canViewReports = true;
+      roles.canManageVPN = true;
     }
     
     // IT-Mitarbeiter
@@ -174,27 +175,33 @@ export const mapUserRoles = (userGroups) => {
       roles.isITSZ = true;
       roles.canManageUsers = true;
       roles.canViewReports = true;
+      roles.canManageVPN = true;
     }
 
     // Allgemeine Beschäftigte - verschiedene Variationen
     if (groupLower === 'mitarbeiter' || groupLower === 'beschaeftigte' || groupLower === 'mitarbeiter ') {
       roles.isEmployee = true;
+     //! roles.canManageVPN = true;
     }
 
     // Studierende
     if (groupLower === 'studierende') {
       roles.isStudent = true;
+      //! roles.canManageVPN = true;
     }
 
     // Lehrende
     if (groupLower === 'Dozenten') {
       roles.isLecturer = true;
+      //! roles.canManageUsers = true;
+      //! roles.canManageVPN = true;
 
     }
     
     // Gastdozenten
     if (groupLower === 'gastdozenten') {
       roles.isGuestLecturer = true;
+      //! roles.canManageVPN = true;
     }
   });
 
