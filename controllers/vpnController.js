@@ -37,6 +37,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { logSecurityEvent } from '../utils/securityLogger.js';
 import { getOPNsenseAPI } from '../config/opnsense.js';
+import { logger } from '../utils/securityLogger.js';
 
 // Promisify exec für async/await
 const execAsync = promisify(exec);
@@ -45,23 +46,16 @@ const execAsync = promisify(exec);
  * VPN-Limits basierend auf Benutzerrollen
  */
 const getVPNLimitForUser = (user) => {
-  // Debug-Ausgabe für Benutzerrollen
-  console.log(`🔍 VPN-Limit-Check für Benutzer: ${user.username}`);
-  console.log(`   - isITEmployee: ${user.isITEmployee}`);
-  console.log(`   - isEmployee: ${user.isEmployee}`);
-  console.log(`   - isStudent: ${user.isStudent}`);
-  console.log(`   - Gruppen: ${user.groups ? user.groups.join(', ') : 'keine'}`);
+  // Debug-Ausgabe entfernt
   
   if (user.isITEmployee) return -1; // Unbegrenzt für IT-Mitarbeiter
   if (user.isEmployee) return 7;    // 7 für Mitarbeiter
   if (user.isStudent) return 5;     // 5 für Studenten
-  
   // Fallback: Geben Sie authentifizierten Benutzern zumindest ein Basic-Limit
   if (user.username) {
-    console.log(`⚠️ Benutzer ${user.username} hat keine spezifische Rolle, gebe Basic-Limit (3 Verbindungen)`);
     return 3; // Basic-Limit für alle authentifizierten Benutzer
   }
-  
+  if(user.isEmployee && user.isITEmployee) return -1; //Unbegrenzt für IT-Mitarbeiter falls Bug
   return 0; // Keine Berechtigung für nicht-authentifizierte Benutzer
 };
 
@@ -83,46 +77,23 @@ const validateWireGuardKey = (publicKey) => {
 };
 
 /**
- * WireGuard Schlüsselpaar generieren
- */
-const generateWireGuardKeyPair = async () => {
-  try {
-    // Private Key generieren
-    const { stdout: privateKey } = await execAsync('wg genkey');
-    
-    // Public Key aus Private Key ableiten
-    const { stdout: publicKey } = await execAsync(`echo "${privateKey.trim()}" | wg pubkey`);
-    
-    return {
-      privateKey: privateKey.trim(),
-      publicKey: publicKey.trim()
-    };
-  } catch (error) {
-    console.error('Fehler beim Generieren der WireGuard-Schlüssel:', error);
-    throw new Error('Schlüsselgenerierung fehlgeschlagen');
-  }
-};
-
-/**
  * Nächste verfügbare IP-Adresse im VPN-Subnetz finden
  */
 const getNextAvailableIP = async () => {
   try {
-    console.log('🔍 Suche verfügbare IP-Adresse im VPN-Subnetz...');
+  // Debug-Ausgabe entfernt
     
     // Verwendete IP-Adressen aus OPNsense abrufen
     const usedIPs = await getUsedIPAddresses();
-    console.log(`📊 Verwendete IPs: ${usedIPs.length}`);
+  // Debug-Ausgabe entfernt
     
-    // Standard-VPN-Subnetz für HNEE
-    const subnet = '10.88.1'; // Basierend auf der echten OPNsense-Konfiguration
-    
-    // Suche verfügbare IP im Bereich 10.88.1.2 - 10.88.1.254
-    for (let i = 2; i <= 254; i++) {
-      const ip = `${subnet}.${i}`;
-      if (!usedIPs.includes(ip)) {
-        console.log(`✅ Verfügbare IP gefunden: ${ip}`);
-        return ip;
+    // Suche verfügbare IP im Bereich 10.88.1.2 - 10.88.254.254
+    for (let octet3 = 1; octet3 <= 254; octet3++) {
+      for (let octet4 = 2; octet4 <= 254; octet4++) {
+        const ip = `10.88.${octet3}.${octet4}`;
+        if (!usedIPs.includes(ip)) {
+          return ip;
+        }
       }
     }
     
@@ -140,12 +111,12 @@ const getNextAvailableIP = async () => {
  */
 const getUserVPNFiles = async (username) => {
   try {
-    console.log(`🔍 Lade VPN-Peers für Benutzer: ${username}`);
+  // Debug-Ausgabe entfernt
     
     const opnsense = getOPNsenseAPI();
     const allClients = await opnsense.getClients();
     
-    console.log(`📊 Gefundene Clients insgesamt: ${allClients.length}`);
+  // Debug-Ausgabe entfernt
     
     // Filter nur Clients des aktuellen Benutzers (username-*)
     const pattern = `${username}-`;
@@ -153,7 +124,7 @@ const getUserVPNFiles = async (username) => {
       client.name && client.name.toLowerCase().startsWith(pattern.toLowerCase())
     );
     
-    console.log(`👤 Gefundene Clients für ${username}: ${userClients.length}`);
+  // Debug-Ausgabe entfernt
     
     const connections = [];
     for (const client of userClients) {
@@ -206,7 +177,7 @@ const getUserVPNFiles = async (username) => {
       connections.push(connection);
     }
     
-    console.log(`✅ VPN-Verbindungen für ${username} erfolgreich geladen: ${connections.length}`);
+  // Debug-Ausgabe entfernt
     
     return connections;
   } catch (error) {
@@ -233,10 +204,11 @@ const detectPlatform = (deviceName) => {
  * GET /api/vpn/connections
  */
 export const getUserVPNConnections = async (req, res) => {
+  // TEMP DEBUG: Log the user object to diagnose missing roles/permissions
+  logger.info(`[VPN DEBUG] req.user: ${JSON.stringify(req.user)}`);
   try {
     const username = req.user.username;
     
-    console.log(`📡 API-Aufruf: VPN-Verbindungen für Benutzer ${username}`);
     
     // VPN-Peers des Benutzers aus OPNsense abrufen
     const connections = await getUserVPNFiles(username);
@@ -250,7 +222,6 @@ export const getUserVPNConnections = async (req, res) => {
     logSecurityEvent(username, 'VIEW_VPN_CONNECTIONS', 
       `VPN-Verbindungen abgerufen: ${connections.length} total, ${activeCount} aktiv, ${connectedCount} verbunden`);
     
-    console.log(`✅ VPN-Verbindungen für ${username} erfolgreich geladen: ${connections.length} total, ${activeCount} aktiv`);
     
     res.json({
       success: true,
@@ -330,11 +301,30 @@ export const createVPNConnection = async (req, res) => {
       });
     }
     
-    // OPNsense API-Client abrufen
-    const opnsense = getOPNsenseAPI();
-    
     // Client-Name für OPNsense
     const clientName = `${username}-${name.trim().replace(/[^a-zA-Z0-9]/g, '_')}`;
+    // Check for duplicate client name or public key before creation
+    const opnsense = getOPNsenseAPI();
+    const allClients = await opnsense.getClients();
+    // Check for duplicate name (case-insensitive)
+    const duplicateName = allClients.find(client => client.name && client.name.toLowerCase() === clientName.toLowerCase());
+    if (duplicateName) {
+      return res.status(400).json({
+        success: false,
+        error: `Der Verbindungsname '${clientName}' ist bereits vergeben. Bitte wählen Sie einen anderen Namen.`
+      });
+    }
+    // Check for duplicate public key (pubkey or public_key)
+    const duplicateKey = allClients.find(client => {
+      const key = client.pubkey || client.public_key;
+      return key && key.trim() === publicKey.trim();
+    });
+    if (duplicateKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'Der angegebene WireGuard Public Key ist bereits in Benutzung. Bitte verwenden Sie einen neuen Key.'
+      });
+    }
     
     // IP-Adresse aus verfügbarem Pool zuweisen
     const assignedIP = await getNextAvailableIP();
@@ -343,20 +333,45 @@ export const createVPNConnection = async (req, res) => {
     const clientData = {
       enabled: '1',
       name: clientName,
-      public_key: publicKey.trim(),
-      tunnel_addresses: `${assignedIP}/32`,
-      server_address: '', // Server bestimmt automatisch
-      server_port: '',
+      pubkey: publicKey.trim(),
+      tunneladdress: `${assignedIP}/32`,
+      serveraddress: 'vpn.hnee.de',
+      serverport: '51820',
       keepalive: '25',
       comment: `${platform} - ${new Date().toISOString()}`
     };
     
-    console.log(`🔧 Erstelle WireGuard-Client in OPNsense: ${clientName}`);
+  // Debug-Ausgabe entfernt
     
-    const createResponse = await opnsense.createClient(clientData);
-    
+    let createResponse;
+    try {
+      createResponse = await opnsense.createClient(clientData);
+    } catch (apiError) {
+      // Log the payload and error for diagnostics
+      console.error('❌ OPNsense API createClient() failed:', {
+        payload: clientData,
+        error: apiError && apiError.message ? apiError.message : apiError
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Fehler beim Erstellen des WireGuard-Clients (API-Fehler)',
+        details: apiError && apiError.message ? apiError.message : apiError,
+        payload: clientData
+      });
+    }
+
     if (!createResponse.result || createResponse.result !== 'saved') {
-      throw new Error(`OPNsense Client-Erstellung fehlgeschlagen: ${JSON.stringify(createResponse)}`);
+      // Log the payload and full response for diagnostics
+      console.error('❌ OPNsense Client-Erstellung fehlgeschlagen:', {
+        payload: clientData,
+        response: createResponse
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'OPNsense Client-Erstellung fehlgeschlagen',
+        response: createResponse,
+        payload: clientData
+      });
     }
     
     // WireGuard-Konfiguration neu laden
@@ -374,7 +389,7 @@ export const createVPNConnection = async (req, res) => {
     };
     
     // Audit-Log
-    console.log(`✅ WireGuard-Verbindung erfolgreich erstellt: ${clientName} (${assignedIP})`);
+  // Debug-Ausgabe entfernt
     
     logSecurityEvent(username, 'CREATE_VPN_CONNECTION', 
       `WireGuard-Verbindung erstellt: ${clientName} auf ${platform}`);
@@ -427,30 +442,24 @@ export const downloadVPNConfig = async (req, res) => {
     const status = await opnsense.getStatus();
     
     // WireGuard-Konfiguration generieren
-    const config = `[Interface]
+  const config = `
+Address = ${connection.ipAddress}
+DNS = 10.1.1.24, 10.1.1.5
+MTU = 1280
+
+[Peer]
+PublicKey = ${status.server_public_key || 'vK/0hCkyTSIBk5nyin69Q3wdgrxzrruOw43Qj/thMy8='}
+Endpoint = vpn.hnee.de:51820
+AllowedIPs = 0.0.0.0/0
+
 # HNEE WireGuard VPN - ${connection.name}
 # User: ${username}
 # Generated: ${new Date().toISOString()}
-PrivateKey = YOUR_PRIVATE_KEY_HERE
-Address = ${connection.ipAddress}
-DNS = 10.8.0.1, 1.1.1.1
-
-[Peer]
-# HNEE VPN Server
-PublicKey = ${status.server_public_key || 'SERVER_PUBLIC_KEY_FROM_OPNSENSE'}
-Endpoint = ${process.env.OPNSENSE_HOST || 'vpn.hnee.de'}:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-
-# Anweisungen:
-# 1. Ersetzen Sie YOUR_PRIVATE_KEY_HERE mit Ihrem WireGuard Private Key
-# 2. Dieser Key gehört zu Ihrem Public Key: ${connection.publicKey}
-# 3. Speichern Sie diese Datei als ${connection.filename}
-# 4. Importieren Sie die Konfiguration in Ihren WireGuard-Client
+# Importieren Sie die Konfiguration in Ihren WireGuard-Client
 `;
     
     // Audit-Log
-    console.log(`📥 VPN-Konfiguration heruntergeladen: ${connection.filename} von ${username}`);
+  // Debug-Ausgabe entfernt
     
     logSecurityEvent(username, 'DOWNLOAD_VPN_CONFIG', 
       `VPN-Konfiguration heruntergeladen: ${connection.filename}`);
@@ -492,7 +501,7 @@ export const deleteVPNConnection = async (req, res) => {
     // OPNsense API-Client abrufen
     const opnsense = getOPNsenseAPI();
     
-    console.log(`🗑️ Lösche WireGuard-Client: ${connection.filename}`);
+  // Debug-Ausgabe entfernt
     
     // Client in OPNsense löschen
     await opnsense.deleteClient(id);
@@ -501,7 +510,7 @@ export const deleteVPNConnection = async (req, res) => {
     await opnsense.reconfigure();
     
     // Audit-Log
-    console.log(`✅ WireGuard-Verbindung erfolgreich gelöscht: ${connection.filename}`);
+  // Debug-Ausgabe entfernt
     
     logSecurityEvent(username, 'DELETE_VPN_CONNECTION', 
       `WireGuard-Verbindung gelöscht: ${connection.filename}`);
@@ -705,7 +714,8 @@ function generateWireGuardConfig(username, deviceName, clientIP, clientPublicKey
 # Generated: ${new Date().toISOString()}
 PrivateKey = YOUR_PRIVATE_KEY_HERE
 Address = ${clientIP}/24
-DNS = 10.8.0.1, 1.1.1.1
+DNS = 10.1.1.24, 10.1.1.5
+MTU = 1280
 
 [Peer]
 # HNEE VPN Server
@@ -738,7 +748,6 @@ const getUsedIPAddresses = async () => {
     clients.forEach(client => {
       // Verschiedene Feldnamen für IP-Adressen prüfen
       let tunnelAddress = null;
-      
       if (client.tunneladdress) {
         tunnelAddress = client.tunneladdress;
       } else if (client.tunnel_addresses) {
@@ -746,11 +755,10 @@ const getUsedIPAddresses = async () => {
       } else if (client.address) {
         tunnelAddress = client.address;
       }
-      
       if (tunnelAddress) {
-        // Extrahiere IP aus "10.88.1.5/32" Format
+        // Extrahiere IP aus "10.88.x.x/32" Format
         const ip = tunnelAddress.split('/')[0];
-        if (ip && ip.startsWith('10.88.1.')) {
+        if (ip && ip.startsWith('10.88.')) {
           usedIPs.push(ip);
         }
       }
