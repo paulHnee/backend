@@ -40,7 +40,6 @@ import ldapjs from 'ldapjs';
 import { isUserInGroup, getGroupMembers, searchGroups } from '../utils/ldapUtils.js';
 import { getUsersFromOU } from '../utils/ldapOUUtils.js';
 import { logSecurityEvent } from '../utils/securityLogger.js';
-import ldapAuth from '../config/ldap.js';
 import { getOPNsenseAPI } from '../config/opnsense.js';
 
 // ===== KONFIGURATION =====

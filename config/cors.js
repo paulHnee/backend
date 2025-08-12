@@ -1,4 +1,52 @@
-import cors from 'cors';
+/**
+ * Security Headers Middleware (CSP, X-Frame-Options, etc.)
+ *
+ * Exportiert eine Middleware, die alle wichtigen Security-Header setzt.
+ * Kann zentral in server.js eingebunden werden.
+ */
+/**
+ * Kompakte Security-Header Middleware (CSP, X-Frame-Options, etc.)
+ * Setzt alle wichtigen HTTP-Sicherheitsheader für Express.js
+ */
+export const securityHeaders = (req, res, next) => {
+    // Basis-Schutz: MIME, Clickjacking, DNS Prefetch, Download, Cross-Domain
+    res.setHeader('X-Content-Type-Options', 'nosniff'); // MIME sniffing verhindern
+    res.setHeader('X-Frame-Options', 'DENY'); // Clickjacking verhindern
+    res.setHeader('X-DNS-Prefetch-Control', 'off');
+    res.setHeader('X-Download-Options', 'noopen');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+
+    // Referrer und Cross-Origin Policies
+    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.setHeader('Origin-Agent-Cluster', '?1');
+
+    // Content Security Policy (CSP) - kompakt, ohne upgrade-insecure-requests
+    res.setHeader('Content-Security-Policy', [
+        "default-src 'self' http: https:",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: http: https:",
+        "connect-src 'self' http: https:",
+        "font-src 'self'",
+        "object-src 'none'",
+        "media-src 'self'",
+        "frame-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'self'",
+        "script-src-attr 'none'"
+    ].join('; '));
+
+    // Server-Infos und Caching
+    res.removeHeader('X-Powered-By'); // Express-Version verbergen
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    next();
+};
 
 /**
  * CORS (Cross-Origin Resource Sharing) Konfigurationsoptionen
@@ -10,21 +58,14 @@ const corsOptions = {
         const allowedOrigins = [
             // Frontend URLs (mit und ohne Port)
             process.env.FRONTEND_URL || 'https://itsz.hnee.de',
-            'https://itsz.hnee.de:8080',  // Frontend Dev Server
-            'https://itsz.hnee.de:3000',  // Alternative Frontend Port
-            'https://itsz.hnee.de:5173', // Vite Dev Server
             'http://localhost',          // Local nginx proxy
             'http://localhost:80',       // Local nginx proxy explicit
-            'http://localhost:8080',     // Local Frontend
             'http://localhost:3000',     // Local Development
-            'http://localhost:5173',     // Local Vite
             'http://127.0.0.1',          // Localhost IPv4
             'http://127.0.0.1:80',       // Localhost IPv4 explicit
             // Legacy IP-based origins for backward compatibility
             'http://10.1.1.45',
-            'http://10.1.1.45:8080',
             'http://10.1.1.45:3000',
-            'http://10.1.1.45:5173',
             // Additional origins from env
             ...(process.env.ADDITIONAL_ORIGINS ? process.env.ADDITIONAL_ORIGINS.split(',') : []),
         ];

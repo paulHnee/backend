@@ -1,20 +1,21 @@
 /**
  * AuthController - Zentrale Authentifizierungs- und Autorisierungslogik
- * 
- * Diese Datei behandelt alle authentifizierungsbezogenen Anfragen für das HNEE LDAP System.
+ *
+ * Diese Datei behandelt alle Authentifizierungs- und Sitzungsfunktionen für das HNEE LDAP System.
+ *
  * Hauptfunktionen:
- * - LDAP-basierte Benutzerauthentifizierung
- * - JWT-Token-Generierung und -Validierung
- * - HNEE-Gruppen-Extraktion und -Mapping
- * - Session-Management mit HttpOnly Cookies
- * - Sichere Logout-Funktionalität
- * 
+ * - LDAP-basierte Benutzerauthentifizierung (Login, Userinfo, Gruppen)
+ * - JWT-Token-Generierung und -Validierung für Sessions
+ * - Mapping von LDAP-Gruppen auf HNEE-Rollen
+ * - Session-Management mit sicheren HttpOnly Cookies
+ * - Sichere Logout- und Session-Check-Endpunkte
+ *
  * Sicherheitsfeatures:
- * - HttpOnly Cookies für Token-Speicherung
- * - Sichere Cookie-Einstellungen (sameSite, secure)
- * - Automatische Token-Erneuerung
- * - LDAP-Gruppenvalidierung
- * 
+ * - Speicherung des JWT-Tokens ausschließlich im HttpOnly-Cookie (nicht im Body)
+ * - Sichere Cookie-Einstellungen (sameSite, secure, httpOnly)
+ * - Automatische Token-Erneuerung bei erfolgreichem Login
+ * - LDAP-Gruppenvalidierung und rollenbasiertes Mapping
+ *
  * @author ITSZ Team
  * @version 1.0.0
  */
@@ -96,12 +97,13 @@ export const login = async (req, res) => {
     });
 
     // ANSTATT den Token im Body zu senden, setzen wir ein sicheres HttpOnly-Cookie.
+    // Setze das Cookie sicher für HTTPS-Umgebungen (secure: true in Produktion)
     res.cookie('session_token', token, {
-      httpOnly: true, // Verhindert den Zugriff über JavaScript im Browser
-      secure: false, // Set to false for HTTP connections (change to true for HTTPS in production)
-      sameSite: 'lax', // Changed from 'strict' to 'lax' for cross-origin requests
-      path: '/', // Ensure cookie is available for all paths
-      maxAge: 24 * 60 * 60 * 1000 // 1 Tag in Millisekunden
+      httpOnly: true,
+      secure: true,
+      sameSite: 'strict', // Optional: 'strict' für maximale Sicherheit - Standard 'lax'
+      path: '/',
+      maxAge: 24 * 60 * 60 * 1000
     });
 
     // Sende Erfolgsmeldung und erweiterte Benutzerdaten zurück (ohne Token)
@@ -131,11 +133,12 @@ export const login = async (req, res) => {
  */
 export const logout = (req, res) => {
   // Lösche das Cookie, indem wir es mit einem abgelaufenen Datum überschreiben.
+  // Lösche das Cookie sicher (secure-Flag wie beim Login)
   res.cookie('session_token', '', {
     httpOnly: true,
-    secure: false, // Match the login cookie settings
-    sameSite: 'lax', // Match the login cookie settings
-    path: '/', // Ensure cookie is cleared from all paths
+    secure: true,
+    sameSite: 'strict', // Optional: 'strict' für maximale Sicherheit - Standard 'lax'
+    path: '/',
     expires: new Date(0)
   });
   res.status(200).json({ message: 'Erfolgreich abgemeldet' });

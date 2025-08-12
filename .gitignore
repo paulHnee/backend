@@ -23,6 +23,7 @@ itsz.hnee.de.conf
 # production
 /build
 /dist
+/certs
 
 # misc
 .DS_Store

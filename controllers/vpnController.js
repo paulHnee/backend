@@ -1,31 +1,31 @@
 /**
- * VPN-Management Controller für HNEE IT-Service Zentrum
- * 
- * Dieser Controller implementiert die Backend-Logik für die VPN-Verwaltung.
- * Er bietet Endpunkte für die Erstellung, Verwaltung und Konfiguration von
- * VPN-Verbindungen mit rollenbasierten Limits und Sicherheitsvalidierung.
- * 
- * Features:
- * - VPN-Verbindungen erstellen und verwalten
- * - Public Key Validierung (SSH und WireGuard)
- * - Rollenbasierte Limits (Studenten: 5, Mitarbeiter: 7, IT: unbegrenzt)
- * - WireGuard-Konfigurationsgenerierung
- * - VPN-Status und Monitoring
- * - Sichere Schlüsselverwaltung
- * 
+ * VPN-Management Controller für das HNEE IT-Service Zentrum
+ *
+ * Dieser Controller enthält die gesamte Backend-Logik zur Verwaltung von VPN-Verbindungen.
+ * Er stellt REST-API-Endpunkte bereit, um VPN-Accounts zu erstellen, zu löschen, zu konfigurieren
+ * und zu überwachen. Die Implementierung ist eng mit OPNsense (Firewall/VPN-Appliance) und WireGuard
+ * integriert und berücksichtigt verschiedene Benutzerrollen (Student, Mitarbeiter, IT).
+ *
+ * Hauptfunktionen:
+ * - Erstellen, Löschen und Auflisten von VPN-Verbindungen für Benutzer (Peer-Management)
+ * - Validierung und Verwaltung von WireGuard Public Keys (nur gültige Keys werden akzeptiert)
+ * - Automatische Zuweisung freier IP-Adressen im VPN-Subnetz (10.88.0.0/16)
+ * - Generierung von WireGuard-Konfigurationsdateien für verschiedene Plattformen
+ * - Status- und Monitoring-Funktionen für Admins (z.B. letzte Handshakes, aktive Verbindungen)
+ * - Audit-Logging aller sicherheitsrelevanten Aktionen (z.B. Download, Löschung, Erstellung)
+ *
  * Sicherheitsaspekte:
- * - Eingabevalidierung für Public Keys
- * - Benutzerauthentifizierung erforderlich
- * - Rollenbasierte Zugriffskontrolle
- * - Audit-Logging für VPN-Aktionen
- * - Rate-Limiting für VPN-Erstellung
- * 
- * WireGuard Integration:
- * - Automatische Schlüsselpaar-Generierung
- * - Konfigurationsdatei-Erstellung
- * - IP-Adressenverwaltung im VPN-Subnetz
- * - Peer-Management
- * 
+ * - Strikte Eingabevalidierung (z.B. Public Key Format, Namenskonventionen)
+ * - Authentifizierung und rollenbasierte Zugriffskontrolle für alle Endpunkte
+ * - Rate-Limiting und Limitierung der maximalen Verbindungen pro Benutzerrolle
+ * - Keine Speicherung von Private Keys auf dem Server (Zero-Knowledge-Prinzip)
+ * - Logging aller sicherheitsrelevanten Aktionen für Nachvollziehbarkeit
+ *
+ * WireGuard/OPNsense-Integration:
+ * - Direkte API-Kommunikation mit OPNsense zur Peer-Verwaltung
+ * - Automatisches Reconfig/Restart des WireGuard-Interfaces nach Änderungen
+ * - Flexible Unterstützung für verschiedene Plattformen (Windows, macOS, Linux, iOS, Android)
+ *
  * @author Paul Buchwald
  * @version 1.0.0
  */
@@ -43,7 +43,16 @@ import { logger } from '../utils/securityLogger.js';
 const execAsync = promisify(exec);
 
 /**
- * VPN-Limits basierend auf Benutzerrollen
+ * Ermittelt das maximale VPN-Limit für einen Benutzer basierend auf seiner Rolle.
+ *
+ * - IT-Mitarbeiter: unbegrenzt (-1)
+ * - Mitarbeiter: 7 Verbindungen
+ * - Studenten: 5 Verbindungen
+ * - Sonstige authentifizierte Nutzer: 3 Verbindungen
+ * - Nicht authentifiziert: 0
+ *
+ * @param {Object} user - Das User-Objekt mit Rolleninformationen
+ * @returns {number} Maximale Anzahl an VPN-Verbindungen
  */
 const getVPNLimitForUser = (user) => {
   if (user.isITEmployee) return -1; // Unbegrenzt für IT-Mitarbeiter
@@ -56,8 +65,12 @@ const getVPNLimitForUser = (user) => {
 };
 
 /**
- * WireGuard Public Key validieren
- * Akzeptiert nur WireGuard Public Keys (Base64, 44 Zeichen)
+ * Prüft, ob ein übergebener Public Key ein gültiger WireGuard Public Key ist.
+ *
+ * WireGuard Public Keys sind immer 44 Zeichen lang (Base64, endet mit '=')
+ *
+ * @param {string} publicKey - Der zu prüfende Public Key
+ * @returns {Object} { valid: boolean, type: string|null }
  */
 const validateWireGuardKey = (publicKey) => {
   const key = publicKey.trim();
@@ -70,7 +83,12 @@ const validateWireGuardKey = (publicKey) => {
 };
 
 /**
- * Nächste verfügbare IP-Adresse im VPN-Subnetz finden
+ * Sucht die nächste freie IP-Adresse im VPN-Subnetz (10.88.1.2 - 10.88.254.254).
+ *
+ * Holt alle bereits vergebenen IPs von OPNsense und gibt die erste freie zurück.
+ *
+ * @returns {Promise<string>} Die nächste verfügbare IP-Adresse
+ * @throws {Error} Wenn keine IP mehr frei ist
  */
 const getNextAvailableIP = async () => {
   try {
@@ -93,8 +111,13 @@ const getNextAvailableIP = async () => {
 };
 
 /**
- * VPN-Verbindungen für Benutzer aus OPNsense abrufen
- * Filtert WireGuard-Clients nach Benutzer-Pattern "username-*"
+ * Holt alle VPN-Verbindungen (WireGuard-Clients) eines Benutzers aus OPNsense.
+ *
+ * Filtert alle Clients, deren Name mit "username-" beginnt. Liefert ein Array
+ * mit Verbindungsobjekten inkl. Status, IP, Handshake, Plattform usw.
+ *
+ * @param {string} username - Der Benutzername
+ * @returns {Promise<Array>} Array mit Verbindungsobjekten
  */
 const getUserVPNFiles = async (username) => {
   try {
@@ -165,7 +188,10 @@ const getUserVPNFiles = async (username) => {
 };
 
 /**
- * Plattform basierend auf Device-Namen erkennen
+ * Erkennt die Zielplattform (windows, macos, ios, android, linux) anhand des Gerätenamens.
+ *
+ * @param {string} deviceName - Name des Geräts
+ * @returns {string} Plattform-String
  */
 const detectPlatform = (deviceName) => {
   const name = deviceName.toLowerCase();
@@ -177,8 +203,12 @@ const detectPlatform = (deviceName) => {
 };
 
 /**
- * VPN-Verbindungen für Benutzer abrufen
- * GET /api/vpn/connections
+ * API-Handler: Gibt alle VPN-Verbindungen des angemeldeten Benutzers zurück.
+ *
+ * Holt die Peers aus OPNsense, berechnet Statistiken und prüft Limits.
+ * Antwortet mit einer Liste der Verbindungen und Statusinfos.
+ *
+ * Route: GET /api/vpn/connections
  */
 export const getUserVPNConnections = async (req, res) => {
   logger.info(`[VPN DEBUG] req.user: ${JSON.stringify(req.user)}`);
@@ -218,8 +248,12 @@ export const getUserVPNConnections = async (req, res) => {
 };
 
 /**
- * Neue VPN-Verbindung erstellen
- * POST /api/vpn/connections
+ * API-Handler: Erstellt eine neue VPN-Verbindung für den angemeldeten Benutzer.
+ *
+ * Validiert Eingaben, prüft Limits, prüft auf Duplikate, weist eine freie IP zu
+ * und legt den Peer via OPNsense API an. Startet das Interface neu.
+ *
+ * Route: POST /api/vpn/connections
  */
 export const createVPNConnection = async (req, res) => {
   try {
@@ -361,8 +395,11 @@ export const createVPNConnection = async (req, res) => {
 };
 
 /**
- * VPN-Konfiguration herunterladen
- * GET /api/vpn/connections/:id/config
+ * API-Handler: Generiert und liefert die WireGuard-Konfigurationsdatei für eine Verbindung.
+ *
+ * Prüft Besitz und Status, holt Serverdaten und gibt die Konfiguration als Download zurück.
+ *
+ * Route: GET /api/vpn/connections/:id/config
  */
 export const downloadVPNConfig = async (req, res) => {
   try {
@@ -417,8 +454,11 @@ AllowedIPs = 0.0.0.0/0
 };
 
 /**
- * VPN-Verbindung löschen
- * DELETE /api/vpn/connections/:id
+ * API-Handler: Löscht eine VPN-Verbindung (Peer) für den angemeldeten Benutzer.
+ *
+ * Prüft Besitz, löscht Peer via OPNsense API, startet Interface neu und loggt die Aktion.
+ *
+ * Route: DELETE /api/vpn/connections/:id
  */
 export const deleteVPNConnection = async (req, res) => {
   try {
@@ -458,8 +498,12 @@ export const deleteVPNConnection = async (req, res) => {
 };
 
 /**
- * VPN-Statistiken für Administratoren
- * GET /api/vpn/stats
+ * API-Handler: Liefert umfassende VPN-Statistiken für IT-Admins.
+ *
+ * Holt alle Peers und Statusdaten von OPNsense, gruppiert nach Rollen und gibt
+ * Serverstatus, Nutzerverteilung und letzte Aktivitäten zurück.
+ *
+ * Route: GET /api/vpn/stats
  */
 export const getVPNStats = async (req, res) => {
   try {
@@ -529,8 +573,11 @@ export const getVPNStats = async (req, res) => {
 };
 
 /**
- * VPN-Konfiguration für verschiedene Plattformen generieren
- * GET /api/vpn/config
+ * API-Handler: Generiert eine VPN-Konfigurationsvorlage für verschiedene Plattformen.
+ *
+ * Liefert Dateinamen, Installationsanleitung und Download-URL für die gewählte Plattform.
+ *
+ * Route: GET /api/vpn/config
  */
 export const generateVpnConfig = async (req, res) => {
   try {
@@ -613,10 +660,17 @@ export const generateVpnConfig = async (req, res) => {
   }
 };
 
-// ===== HELPER FUNCTIONS =====
+// ===== HILFSFUNKTIONEN =====
 
 /**
- * WireGuard-Konfigurationsdatei generieren
+ * Generiert eine vollständige WireGuard-Konfigurationsdatei als Text.
+ *
+ * @param {string} username - Benutzername
+ * @param {string} deviceName - Gerätename
+ * @param {string} clientIP - Zuzuordnende IP-Adresse
+ * @param {string} clientPublicKey - Öffentlicher Key des Clients
+ * @param {string} serverPublicKey - Öffentlicher Key des Servers
+ * @returns {string} WireGuard-Konfigurationsdatei
  */
 function generateWireGuardConfig(username, deviceName, clientIP, clientPublicKey, serverPublicKey) {
   return `[Interface]
@@ -644,7 +698,12 @@ PersistentKeepalive = 25
 }
 
 /**
- * Verwendete IP-Adressen aus OPNsense abrufen
+ * Holt alle aktuell verwendeten IP-Adressen aus OPNsense (Peers).
+ *
+ * Prüft verschiedene Felder für die IP, reserviert Server-IP und gibt ein Array
+ * aller belegten Adressen zurück. Bei Fehlern Fallback auf Standard-IPs.
+ *
+ * @returns {Promise<Array<string>>} Array belegter IP-Adressen
  */
 const getUsedIPAddresses = async () => {
   try {
