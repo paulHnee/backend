@@ -46,16 +46,12 @@ const execAsync = promisify(exec);
  * VPN-Limits basierend auf Benutzerrollen
  */
 const getVPNLimitForUser = (user) => {
-  // Debug-Ausgabe entfernt
-  
   if (user.isITEmployee) return -1; // Unbegrenzt für IT-Mitarbeiter
   if (user.isEmployee) return 7;    // 7 für Mitarbeiter
   if (user.isStudent) return 5;     // 5 für Studenten
-  // Fallback: Geben Sie authentifizierten Benutzern zumindest ein Basic-Limit
   if (user.username) {
     return 3; // Basic-Limit für alle authentifizierten Benutzer
   }
-  if(user.isEmployee && user.isITEmployee) return -1; //Unbegrenzt für IT-Mitarbeiter falls Bug
   return 0; // Keine Berechtigung für nicht-authentifizierte Benutzer
 };
 
@@ -65,14 +61,11 @@ const getVPNLimitForUser = (user) => {
  */
 const validateWireGuardKey = (publicKey) => {
   const key = publicKey.trim();
-  
   // WireGuard Public Key Validation (Base64, 44 Zeichen)
   const wireguardKeyPattern = /^[A-Za-z0-9+/]{43}=$/;
-  
   if (wireguardKeyPattern.test(key)) {
     return { valid: true, type: 'wireguard' };
   }
-  
   return { valid: false, type: null };
 };
 
@@ -81,12 +74,7 @@ const validateWireGuardKey = (publicKey) => {
  */
 const getNextAvailableIP = async () => {
   try {
-  // Debug-Ausgabe entfernt
-    
-    // Verwendete IP-Adressen aus OPNsense abrufen
     const usedIPs = await getUsedIPAddresses();
-  // Debug-Ausgabe entfernt
-    
     // Suche verfügbare IP im Bereich 10.88.1.2 - 10.88.254.254
     for (let octet3 = 1; octet3 <= 254; octet3++) {
       for (let octet4 = 2; octet4 <= 254; octet4++) {
@@ -96,7 +84,6 @@ const getNextAvailableIP = async () => {
         }
       }
     }
-    
     console.error('❌ Keine verfügbaren IP-Adressen im VPN-Subnetz gefunden');
     throw new Error('Keine verfügbaren IP-Adressen im VPN-Subnetz');
   } catch (error) {
@@ -111,40 +98,33 @@ const getNextAvailableIP = async () => {
  */
 const getUserVPNFiles = async (username) => {
   try {
-  // Debug-Ausgabe entfernt
-    
     const opnsense = getOPNsenseAPI();
     const allClients = await opnsense.getClients();
-    
-  // Debug-Ausgabe entfernt
-    
     // Filter nur Clients des aktuellen Benutzers (username-*)
     const pattern = `${username}-`;
     const userClients = allClients.filter(client => 
       client.name && client.name.toLowerCase().startsWith(pattern.toLowerCase())
     );
-    
-  // Debug-Ausgabe entfernt
-    
     const connections = [];
     for (const client of userClients) {
       // Device-Name extrahieren (entferne "username-" Prefix)
       const deviceName = client.name.replace(new RegExp(`^${username}-`, 'i'), '');
-      
       // Status-Bestimmung basierend auf verschiedenen API-Feldern
       let status = 'inactive';
       let lastConnected = null;
-      
+      // Nutze 'latest-handshake' (UNIX timestamp) als bevorzugte Quelle
+      if (typeof client['latest-handshake'] === 'number' && client['latest-handshake'] > 0) {
+        lastConnected = new Date(client['latest-handshake'] * 1000).toISOString();
+      } 
       if (client.enabled === '1' || client.enabled === true) {
         status = 'active';
       }
-      
       // Verbindungsstatus aus verschiedenen möglichen Feldern
       if (client.connected === '1' || client.connected === true || client.status === 'connected') {
         status = 'connected';
-        lastConnected = client.last_handshake || client.lastHandshake || new Date().toISOString();
+        // lastConnected bleibt wie oben bestimmt
+        if (!lastConnected) lastConnected = new Date().toISOString();
       }
-      
       // IP-Adresse aus verschiedenen möglichen Feldern extrahieren
       let ipAddress = 'Nicht zugewiesen';
       if (client.tunneladdress) {
@@ -154,7 +134,8 @@ const getUserVPNFiles = async (username) => {
       } else if (client.address) {
         ipAddress = client.address;
       }
-      
+      const latestHandshakeRaw = client['latest-handshake'];
+      const latestHandshakeISO = (typeof latestHandshakeRaw === 'number') ? new Date(latestHandshakeRaw * 1000).toISOString() : null;
       const connection = {
         id: client.uuid || crypto.randomUUID(),
         name: deviceName,
@@ -163,7 +144,7 @@ const getUserVPNFiles = async (username) => {
         status: status,
         enabled: client.enabled === '1' || client.enabled === true,
         createdAt: client.created || client.created_at || new Date().toISOString(),
-        lastConnected: lastConnected,
+        lastConnected: latestHandshakeISO,
         ipAddress: ipAddress,
         platform: detectPlatform(deviceName),
         publicKey: client.pubkey || client.public_key || '',
@@ -173,12 +154,8 @@ const getUserVPNFiles = async (username) => {
         // Zusätzliche Debug-Informationen
         rawClient: process.env.NODE_ENV === 'development' ? client : undefined
       };
-      
       connections.push(connection);
     }
-    
-  // Debug-Ausgabe entfernt
-    
     return connections;
   } catch (error) {
     console.error(`❌ Fehler beim Abrufen der VPN-Verbindungen von OPNsense für ${username}:`, error.message);
@@ -204,25 +181,18 @@ const detectPlatform = (deviceName) => {
  * GET /api/vpn/connections
  */
 export const getUserVPNConnections = async (req, res) => {
-  // TEMP DEBUG: Log the user object to diagnose missing roles/permissions
   logger.info(`[VPN DEBUG] req.user: ${JSON.stringify(req.user)}`);
   try {
     const username = req.user.username;
-    
-    
     // VPN-Peers des Benutzers aus OPNsense abrufen
     const connections = await getUserVPNFiles(username);
     const userLimit = getVPNLimitForUser(req.user);
-    
     // Zusätzliche Statistiken berechnen
     const activeCount = connections.filter(conn => conn.status === 'active' || conn.enabled).length;
     const connectedCount = connections.filter(conn => conn.status === 'connected').length;
-    
     // Audit-Log
     logSecurityEvent(username, 'VIEW_VPN_CONNECTIONS', 
       `VPN-Verbindungen abgerufen: ${connections.length} total, ${activeCount} aktiv, ${connectedCount} verbunden`);
-    
-    
     res.json({
       success: true,
       connections: connections,
@@ -256,7 +226,6 @@ export const createVPNConnection = async (req, res) => {
     const { name, publicKey, platform = 'windows' } = req.body;
     const user = req.user;
     const username = user.username;
-    
     // Eingabevalidierung
     if (!name || !name.trim()) {
       return res.status(400).json({
@@ -264,14 +233,12 @@ export const createVPNConnection = async (req, res) => {
         error: 'Verbindungsname ist erforderlich'
       });
     }
-    
     if (!publicKey || !publicKey.trim()) {
       return res.status(400).json({
         success: false,
         error: 'WireGuard Public Key ist erforderlich'
       });
     }
-    
     // Nur WireGuard Keys akzeptieren
     const keyValidation = validateWireGuardKey(publicKey);
     if (!keyValidation.valid) {
@@ -280,7 +247,6 @@ export const createVPNConnection = async (req, res) => {
         error: 'Ungültiger WireGuard Public Key (muss 44 Zeichen Base64 sein)'
       });
     }
-    
     // Plattform validieren
     const supportedPlatforms = ['windows', 'macos', 'linux', 'ios', 'android'];
     if (!supportedPlatforms.includes(platform)) {
@@ -289,18 +255,15 @@ export const createVPNConnection = async (req, res) => {
         error: `Plattform nicht unterstützt. Verfügbar: ${supportedPlatforms.join(', ')}`
       });
     }
-    
     // Aktuelle VPN-Verbindungen prüfen
     const existingConnections = await getUserVPNFiles(username);
     const userLimit = getVPNLimitForUser(user);
-    
     if (userLimit !== -1 && existingConnections.length >= userLimit) {
       return res.status(400).json({
         success: false,
         error: `VPN-Limit erreicht: ${userLimit} Verbindungen maximal`
       });
     }
-    
     // Client-Name für OPNsense
     const clientName = `${username}-${name.trim().replace(/[^a-zA-Z0-9]/g, '_')}`;
     // Check for duplicate client name or public key before creation
@@ -325,58 +288,51 @@ export const createVPNConnection = async (req, res) => {
         error: 'Der angegebene WireGuard Public Key ist bereits in Benutzung. Bitte verwenden Sie einen neuen Key.'
       });
     }
-    
     // IP-Adresse aus verfügbarem Pool zuweisen
     const assignedIP = await getNextAvailableIP();
-    
     // WireGuard-Client in OPNsense erstellen
     const clientData = {
       enabled: '1',
       name: clientName,
       pubkey: publicKey.trim(),
       tunneladdress: `${assignedIP}/32`,
-      serveraddress: 'vpn.hnee.de',
-      serverport: '51820',
-      keepalive: '25',
-      comment: `${platform} - ${new Date().toISOString()}`
+      servers: '563254ff-299a-45bd-bb7a-64cb9bef6f6b'
     };
-    
-  // Debug-Ausgabe entfernt
-    
+    const apiPayload = {
+      client: clientData
+    };
     let createResponse;
     try {
-      createResponse = await opnsense.createClient(clientData);
+      createResponse = await opnsense.createClient(apiPayload);
     } catch (apiError) {
       // Log the payload and error for diagnostics
       console.error('❌ OPNsense API createClient() failed:', {
-        payload: clientData,
+        payload: apiPayload,
         error: apiError && apiError.message ? apiError.message : apiError
       });
       return res.status(500).json({
         success: false,
         error: 'Fehler beim Erstellen des WireGuard-Clients (API-Fehler)',
         details: apiError && apiError.message ? apiError.message : apiError,
-        payload: clientData
+        payload: apiPayload
       });
     }
-
     if (!createResponse.result || createResponse.result !== 'saved') {
       // Log the payload and full response for diagnostics
       console.error('❌ OPNsense Client-Erstellung fehlgeschlagen:', {
-        payload: clientData,
+        payload: apiPayload,
         response: createResponse
       });
       return res.status(500).json({
         success: false,
         error: 'OPNsense Client-Erstellung fehlgeschlagen',
         response: createResponse,
-        payload: clientData
+        payload: apiPayload
       });
     }
-    
-    // WireGuard-Konfiguration neu laden
+    // WireGuard-Konfiguration neu laden und Interface neu starten
     await opnsense.reconfigure();
-    
+    await opnsense.restartInterface();
     const newConnection = {
       id: createResponse.uuid || crypto.randomUUID(),
       name: name.trim(),
@@ -387,19 +343,13 @@ export const createVPNConnection = async (req, res) => {
       createdAt: new Date().toISOString(),
       publicKey: publicKey.trim()
     };
-    
-    // Audit-Log
-  // Debug-Ausgabe entfernt
-    
     logSecurityEvent(username, 'CREATE_VPN_CONNECTION', 
       `WireGuard-Verbindung erstellt: ${clientName} auf ${platform}`);
-    
     res.status(201).json({
       success: true,
       connection: newConnection,
       message: `WireGuard-Verbindung ${clientName} erfolgreich erstellt`
     });
-    
   } catch (error) {
     console.error('❌ Fehler beim Erstellen der VPN-Verbindung:', error);
     res.status(500).json({
@@ -418,31 +368,26 @@ export const downloadVPNConfig = async (req, res) => {
   try {
     const { id } = req.params;
     const username = req.user.username;
-    
     // VPN-Verbindungen des Benutzers abrufen
     const connections = await getUserVPNFiles(username);
     const connection = connections.find(conn => conn.id === id);
-    
     if (!connection) {
       return res.status(404).json({
         success: false,
         error: 'VPN-Verbindung nicht gefunden'
       });
     }
-    
     if (connection.status !== 'active') {
       return res.status(400).json({
         success: false,
         error: 'VPN-Verbindung ist nicht aktiv'
       });
     }
-    
     // OPNsense API für Server-Details abrufen
     const opnsense = getOPNsenseAPI();
     const status = await opnsense.getStatus();
-    
     // WireGuard-Konfiguration generieren
-  const config = `
+    const config = `
 Address = ${connection.ipAddress}
 DNS = 10.1.1.24, 10.1.1.5
 MTU = 1280
@@ -454,20 +399,13 @@ AllowedIPs = 0.0.0.0/0
 
 # HNEE WireGuard VPN - ${connection.name}
 # User: ${username}
-# Generated: ${new Date().toISOString()}
 # Importieren Sie die Konfiguration in Ihren WireGuard-Client
 `;
-    
-    // Audit-Log
-  // Debug-Ausgabe entfernt
-    
     logSecurityEvent(username, 'DOWNLOAD_VPN_CONFIG', 
       `VPN-Konfiguration heruntergeladen: ${connection.filename}`);
-    
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', `attachment; filename="${connection.filename}"`);
     res.send(config);
-    
   } catch (error) {
     console.error('❌ Fehler beim Generieren der VPN-Konfiguration:', error);
     res.status(500).json({
@@ -486,40 +424,29 @@ export const deleteVPNConnection = async (req, res) => {
   try {
     const { id } = req.params;
     const username = req.user.username;
-    
     // Aktuelle VPN-Verbindungen abrufen
     const connections = await getUserVPNFiles(username);
     const connection = connections.find(conn => conn.id === id);
-    
     if (!connection) {
       return res.status(404).json({
         success: false,
         error: 'VPN-Verbindung nicht gefunden'
       });
     }
-    
     // OPNsense API-Client abrufen
     const opnsense = getOPNsenseAPI();
-    
-  // Debug-Ausgabe entfernt
-    
     // Client in OPNsense löschen
     await opnsense.deleteClient(id);
-    
-    // WireGuard-Konfiguration neu laden
+    // WireGuard-Konfiguration neu laden und Interface neu starten
     await opnsense.reconfigure();
-    
+    await opnsense.restartInterface();
     // Audit-Log
-  // Debug-Ausgabe entfernt
-    
     logSecurityEvent(username, 'DELETE_VPN_CONNECTION', 
       `WireGuard-Verbindung gelöscht: ${connection.filename}`);
-    
     res.json({
       success: true,
       message: `VPN-Verbindung ${connection.name} erfolgreich gelöscht`
     });
-    
   } catch (error) {
     console.error('❌ Fehler beim Löschen der VPN-Verbindung:', error);
     res.status(500).json({
@@ -543,25 +470,20 @@ export const getVPNStats = async (req, res) => {
         error: 'Berechtigung erforderlich'
       });
     }
-    
     // Echte Statistiken von OPNsense abrufen
     const opnsense = getOPNsenseAPI();
-    
     // Alle WireGuard-Clients abrufen
     const allClients = await opnsense.getClients();
     const status = await opnsense.getStatus();
-    
     // Statistiken berechnen
     const totalConnections = allClients.length;
     const activeConnections = allClients.filter(client => client.enabled === '1').length;
-    
     // Benutzer nach Rollen gruppieren (aus Client-Namen extrahieren)
     const usersByRole = {
       students: { connections: 0, limit: 5 },
       employees: { connections: 0, limit: 7 },
       itEmployees: { connections: 0, limit: -1 }
     };
-    
     // Client-Namen analysieren für Rollenerkennung
     allClients.forEach(client => {
       const username = client.name ? client.name.split('-')[0] : '';
@@ -574,7 +496,6 @@ export const getVPNStats = async (req, res) => {
         usersByRole.employees.connections++;
       }
     });
-    
     const stats = {
       totalConnections,
       activeConnections,
@@ -592,13 +513,11 @@ export const getVPNStats = async (req, res) => {
         enabled: client.enabled === '1'
       }))
     };
-    
     res.json({
       success: true,
       stats,
       timestamp: new Date().toISOString()
     });
-    
   } catch (error) {
     console.error('❌ Fehler beim Abrufen der VPN-Statistiken:', error);
     res.status(500).json({
@@ -617,19 +536,15 @@ export const generateVpnConfig = async (req, res) => {
   try {
     const username = req.user?.username || 'unknown';
     const { platform = 'windows' } = req.query;
-
     console.log(`🔐 VPN-Konfiguration für ${username}, Plattform: ${platform}`);
-
     // Unterstützte Plattformen
     const supportedPlatforms = ['windows', 'macos', 'linux', 'ios', 'android'];
-    
     if (!supportedPlatforms.includes(platform)) {
       return res.status(400).json({
         error: 'Unbekannte Plattform',
         supportedPlatforms: supportedPlatforms
       });
     }
-
     // Plattform-spezifische Konfiguration
     const platformConfigs = {
       windows: {
@@ -673,12 +588,9 @@ export const generateVpnConfig = async (req, res) => {
         ]
       }
     };
-
     const config = platformConfigs[platform];
-
     logSecurityEvent(username, 'GENERATE_VPN_CONFIG', 
       `VPN-Konfiguration generiert für Plattform: ${platform}`);
-
     res.json({
       success: true,
       platform: platform,
@@ -692,7 +604,6 @@ export const generateVpnConfig = async (req, res) => {
       supportedPlatforms: supportedPlatforms,
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
     console.error('Fehler bei VPN-Konfiguration:', error);
     res.status(500).json({ 
@@ -738,13 +649,10 @@ PersistentKeepalive = 25
 const getUsedIPAddresses = async () => {
   try {
     console.log('🔍 Lade verwendete IP-Adressen aus OPNsense...');
-    
     const opnsense = getOPNsenseAPI();
     const clients = await opnsense.getClients();
-    
     // Server-IP und Gateway reservieren
     const usedIPs = ['10.88.1.1']; // Server-IP reserviert
-    
     clients.forEach(client => {
       // Verschiedene Feldnamen für IP-Adressen prüfen
       let tunnelAddress = null;
@@ -763,9 +671,7 @@ const getUsedIPAddresses = async () => {
         }
       }
     });
-    
     console.log(`✅ Verwendete IP-Adressen geladen: ${usedIPs.length} (${usedIPs.slice(0, 5).join(', ')}...)`);
-    
     return usedIPs;
   } catch (error) {
     console.error('❌ Fehler beim Abrufen verwendeter IPs:', error.message);

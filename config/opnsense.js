@@ -25,6 +25,19 @@ import https from 'https';
  * OPNsense API-Dokumentation: https://docs.opnsense.org/development/api.html
  */
 class OPNsenseAPI {
+  /**
+   * WireGuard-Interface neu starten (wg0)
+   */
+  async restartInterface() {
+    try {
+      const response = await this.request('/api/wireguard/service/restart', 'POST', {});
+      console.log('✅ WireGuard-Interface (wg1) erfolgreich neu gestartet');
+      return response;
+    } catch (error) {
+      console.error('❌ Fehler beim Neustarten des WireGuard-Interfaces:', error.message);
+      throw error;
+    }
+  }
   constructor(options = {}) {
   // Use env or default: IP for connection, SNI for cert
   this.host = process.env.OPNSENSE_HOST || '10.1.1.48';
