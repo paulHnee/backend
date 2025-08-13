@@ -38,6 +38,7 @@ import { router as vpnRoutes } from './routes/vpnRoutes.js';
 import { router as adminRoutes } from './routes/adminRoutes.js';
 import { router as monitoringRoutes } from './routes/monitoringRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import totpRoutes from './routes/totpRoutes.js';
 import integrationRoutes from './routes/integrationRoutes.js';
 
 // Import CORS options and compact, well-commented securityHeaders middleware
@@ -128,6 +129,8 @@ app.use('/api/admin', adminRoutes); // Admin/Monitoring
 app.use('/api/monitoring', monitoringRoutes); // System-Monitoring
 app.use('/api/user', userRoutes);   // Benutzerfunktionen
 app.use('/api/integration', integrationRoutes); // Externe Integrationen
+// Mount TOTP routes under /api/vpn
+app.use('/api/vpn', totpRoutes);
 
 // Fehlerbehandlung (404 zuerst, dann global)
 app.use(notFoundHandler);

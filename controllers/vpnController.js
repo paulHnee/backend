@@ -1,3 +1,46 @@
+// ===== OTP LOGIC (imported) =====
+import {
+  requireVPNAccess,
+  isAdminAvailable
+} from '../utils/otpAuthenticator.js';
+import {
+  getTOTPSetup,
+  verifyTOTP
+} from '../controllers/totpController.js';
+
+/**
+ * API-Handler: Generiert und speichert einen OTP für den Benutzer
+ */
+export const generateOTP = async (req, res) => {
+  const username = req.user?.username;
+  if (!username) {
+    return res.status(401).json({ success: false, error: 'Nicht authentifiziert' });
+  }
+  try {
+    const { otp, expires } = generateOTPForUser(username);
+    // TODO: Send OTP via email/SMS (for demo, return in response)
+    res.json({ success: true, otp, expires });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * API-Handler: Verifiziert den OTP für den Benutzer
+ */
+export const verifyOTP = async (req, res) => {
+  const username = req.user?.username;
+  const { otp } = req.body;
+  if (!username || !otp) {
+    return res.status(400).json({ success: false, error: 'OTP und Benutzer erforderlich' });
+  }
+  if (!verifyOTPForUser(username, otp)) {
+    return res.status(401).json({ success: false, error: 'Ungültiger oder abgelaufener OTP' });
+  }
+  req.session = req.session || {};
+  req.session.vpnOtpVerified = true;
+  res.json({ success: true });
+};
 /**
  * VPN-Management Controller für das HNEE IT-Service Zentrum
  *
@@ -34,6 +77,42 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import crypto from 'crypto';
 import { logSecurityEvent } from '../utils/securityLogger.js';
+import geoip from 'geoip-lite';
+import UAParser from 'ua-parser-js';
+import fs from 'fs';
+import path from 'path';
+/**
+ * Loggt VPN-bezogene Events mit IP, GeoLocation, Device, Name und Timestamp.
+ * @param {Object} req - Express Request Objekt
+ * @param {string} action - Aktion (z.B. VIEW, CREATE, DELETE)
+ * @param {string} details - Weitere Details
+ */
+function logVPNEvent(req, action, details = '') {
+  const ip = req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress || 'unknown';
+  const geo = geoip.lookup(ip) || {};
+  const ua = req.headers['user-agent'] || '';
+  const parser = new UAParser(ua);
+  const deviceInfo = parser.getResult();
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    username: req.user?.username || 'unknown',
+    action,
+    details,
+    ip,
+    geo,
+    device: deviceInfo.device?.type || 'unknown',
+    deviceName: deviceInfo.device?.model || deviceInfo.os?.name || 'unknown',
+    userAgent: ua
+  };
+  logger.info(`[VPN LOG] ${JSON.stringify(logEntry)}`);
+  // Write to vpn.log file
+  try {
+    const logPath = path.resolve(__dirname, '../logs/vpn.log');
+    fs.appendFileSync(logPath, JSON.stringify(logEntry) + '\n', 'utf8');
+  } catch (err) {
+    logger.error(`[VPN LOG ERROR] Could not write to vpn.log: ${err.message}`);
+  }
+}
 import { getOPNsenseAPI } from '../config/opnsense.js';
 import { logger } from '../utils/securityLogger.js';
 
@@ -210,7 +289,10 @@ const detectPlatform = (deviceName) => {
  * Route: GET /api/vpn/connections
  */
 export const getUserVPNConnections = async (req, res) => {
-  logger.info(`[VPN DEBUG] req.user: ${JSON.stringify(req.user)}`);
+  requireVPNAccess(req, res, () => {
+    logVPNEvent(req, 'VIEW_VPN_CONNECTIONS', `User: ${req.user?.username}`);
+    // ...existing code...
+  });
   try {
     const username = req.user.username;
     // VPN-Peers des Benutzers aus OPNsense abrufen
@@ -255,6 +337,10 @@ export const getUserVPNConnections = async (req, res) => {
  * Route: POST /api/vpn/connections
  */
 export const createVPNConnection = async (req, res) => {
+  requireVPNAccess(req, res, () => {
+    logVPNEvent(req, 'CREATE_VPN_CONNECTION', `User: ${req.user?.username}, Name: ${req.body.name}`);
+    // ...existing code...
+  });
   try {
     const { name, publicKey, platform = 'windows' } = req.body;
     const user = req.user;
@@ -401,6 +487,10 @@ export const createVPNConnection = async (req, res) => {
  * Route: GET /api/vpn/connections/:id/config
  */
 export const downloadVPNConfig = async (req, res) => {
+  requireVPNAccess(req, res, () => {
+    logVPNEvent(req, 'DOWNLOAD_VPN_CONFIG', `User: ${req.user?.username}, ConnectionId: ${req.params.id}`);
+    // ...existing code...
+  });
   try {
     const { id } = req.params;
     const username = req.user.username;
@@ -460,6 +550,10 @@ AllowedIPs = 0.0.0.0/0
  * Route: DELETE /api/vpn/connections/:id
  */
 export const deleteVPNConnection = async (req, res) => {
+  requireVPNAccess(req, res, () => {
+    logVPNEvent(req, 'DELETE_VPN_CONNECTION', `User: ${req.user?.username}, ConnectionId: ${req.params.id}`);
+    // ...existing code...
+  });
   try {
     const { id } = req.params;
     const username = req.user.username;
@@ -505,6 +599,7 @@ export const deleteVPNConnection = async (req, res) => {
  * Route: GET /api/vpn/stats
  */
 export const getVPNStats = async (req, res) => {
+  logVPNEvent(req, 'VIEW_VPN_STATS', `User: ${req.user?.username}`);
   try {
     // Nur für IT-Mitarbeiter verfügbar
     if (!req.user.isITEmployee) {
@@ -579,6 +674,10 @@ export const getVPNStats = async (req, res) => {
  * Route: GET /api/vpn/config
  */
 export const generateVpnConfig = async (req, res) => {
+  requireVPNAccess(req, res, () => {
+    logVPNEvent(req, 'GENERATE_VPN_CONFIG', `User: ${req.user?.username}, Platform: ${req.query.platform}`);
+    // ...existing code...
+  });
   try {
     const username = req.user?.username || 'unknown';
     const { platform = 'windows' } = req.query;
