@@ -29,8 +29,7 @@ import {
   createVPNConnection,
   downloadVPNConfig,
   deleteVPNConnection,
-  getVPNStats,
-  generateVpnConfig
+  getVPNStats
 } from '../controllers/vpnController.js';
 import { verifyToken } from '../middleware/authMiddleware.js';
 
@@ -152,33 +151,7 @@ router.delete('/connections/:id', verifyToken, deleteVPNConnection);
  */
 router.get('/stats', verifyToken, getVPNStats);
 
-/**
- * VPN-Konfiguration für verschiedene Plattformen generieren
- * GET /api/vpn/config
- * 
- * Generiert VPN-Konfigurationsdateien für verschiedene Plattformen
- * (Windows, macOS, iOS, Android). Ersetzt die alte Integration-Route.
- * 
- * Authentifizierung: JWT-Token erforderlich
- * Berechtigung: Alle authentifizierten Benutzer
- * 
- * Query Parameters:
- * - platform: windows | macos | ios | android (default: windows)
- * 
- * Response:
- * {
- *   "success": true,
- *   "platform": "windows",
- *   "config": {
- *     "filename": "hnee-vpn-user-windows.ovpn",
- *     "instructions": [...],
- *     "downloadUrl": "/api/vpn/download/user/windows",
- *     "validUntil": "2024-07-29T..."
- *   },
- *   "security": {...}
- * }
- */
-router.get('/config', verifyToken, generateVpnConfig);
+// ...ungenuetzte Route entfernt...
 
 /**
  * Alle VPN-Verbindungen für Administratoren
@@ -204,81 +177,81 @@ router.get('/config', verifyToken, generateVpnConfig);
  *   "page": 1,
  *   "limit": 50
  * }
- */
-router.get('/admin/connections', verifyToken, async (req, res) => {
-  try {
-    // Berechtigung prüfen
-    if (!req.user.isITEmployee) {
-      return res.status(403).json({
-        success: false,
-        error: 'Administrative Berechtigung erforderlich'
-      });
-    }
+//  */
+// router.get('/admin/connections', verifyToken, async (req, res) => {
+//   try {
+//     // Berechtigung prüfen
+//     if (!req.user.isITEmployee) {
+//       return res.status(403).json({
+//         success: false,
+//         error: 'Administrative Berechtigung erforderlich'
+//       });
+//     }
     
-    // Query-Parameter extrahieren
-    const { user, status, limit = 50, offset = 0 } = req.query;
+//     // Query-Parameter extrahieren
+//     const { user, status, limit = 50, offset = 0 } = req.query;
     
-    // Mock-Daten für alle VPN-Verbindungen
-    const allConnections = [
-      {
-        id: '1',
-        userId: 'user1',
-        username: 'student1',
-        userRole: 'Student',
-        name: 'Laptop',
-        ipAddress: '10.8.0.2',
-        status: 'active',
-        createdAt: '2024-01-15T10:00:00Z',
-        lastConnected: '2024-07-28T14:30:00Z',
-        dataTransferred: '245000000'
-      },
-      {
-        id: '2',
-        userId: 'user2',
-        username: 'mitarbeiter1',
-        userRole: 'Mitarbeiter',
-        name: 'Homeoffice PC',
-        ipAddress: '10.8.0.3',
-        status: 'inactive',
-        createdAt: '2024-02-20T09:15:00Z',
-        lastConnected: '2024-07-25T16:45:00Z',
-        dataTransferred: '89000000'
-      }
-    ];
+//     // Mock-Daten für alle VPN-Verbindungen
+//     const allConnections = [
+//       {
+//         id: '1',
+//         userId: 'user1',
+//         username: 'student1',
+//         userRole: 'Student',
+//         name: 'Laptop',
+//         ipAddress: '10.8.0.2',
+//         status: 'active',
+//         createdAt: '2024-01-15T10:00:00Z',
+//         lastConnected: '2024-07-28T14:30:00Z',
+//         dataTransferred: '245000000'
+//       },
+//       {
+//         id: '2',
+//         userId: 'user2',
+//         username: 'mitarbeiter1',
+//         userRole: 'Mitarbeiter',
+//         name: 'Homeoffice PC',
+//         ipAddress: '10.8.0.3',
+//         status: 'inactive',
+//         createdAt: '2024-02-20T09:15:00Z',
+//         lastConnected: '2024-07-25T16:45:00Z',
+//         dataTransferred: '89000000'
+//       }
+//     ];
     
-    // Filter anwenden (in Produktion: SQL-Query)
-    let filteredConnections = allConnections;
+//     // Filter anwenden (in Produktion: SQL-Query)
+//     let filteredConnections = allConnections;
     
-    if (user) {
-      filteredConnections = filteredConnections.filter(conn => 
-        conn.username.toLowerCase().includes(user.toLowerCase())
-      );
-    }
+//     if (user) {
+//       filteredConnections = filteredConnections.filter(conn => 
+//         conn.username.toLowerCase().includes(user.toLowerCase())
+//       );
+//     }
     
-    if (status) {
-      filteredConnections = filteredConnections.filter(conn => 
-        conn.status === status
-      );
-    }
+//     if (status) {
+//       filteredConnections = filteredConnections.filter(conn => 
+//         conn.status === status
+//       );
+//     }
     
-    // Paginierung anwenden
-    const paginatedConnections = filteredConnections.slice(
-      parseInt(offset), 
-      parseInt(offset) + parseInt(limit)
-    );
+//     // Paginierung anwenden
+//     const paginatedConnections = filteredConnections.slice(
+//       parseInt(offset), 
+//       parseInt(offset) + parseInt(limit)
+//     );
     
-    res.json({
-      success: true,
-      connections: paginatedConnections,
-      total: filteredConnections.length,
-      page: Math.floor(parseInt(offset) / parseInt(limit)) + 1,
-      limit: parseInt(limit)
-    });
-  } catch (error) {
-    console.error('Fehler beim Abrufen der Admin-VPN-Verbindungen:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Fehler beim Abrufen der VPN-Verbindungen'
-    });
-  }
-});
+//     res.json({
+//       success: true,
+//       connections: paginatedConnections,
+//       total: filteredConnections.length,
+//       page: Math.floor(parseInt(offset) / parseInt(limit)) + 1,
+//       limit: parseInt(limit)
+//     });
+//   } catch (error) {
+//     console.error('Fehler beim Abrufen der Admin-VPN-Verbindungen:', error);
+//     res.status(500).json({
+//       success: false,
+//       error: 'Fehler beim Abrufen der VPN-Verbindungen'
+//     });
+//   }
+// });

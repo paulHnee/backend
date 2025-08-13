@@ -1,3 +1,32 @@
+import fs from 'fs';
+import path from 'path';
+
+// Pfad zur TOTP-Datenbank (JSON-Datei)
+const dbPath = path.join(process.cwd(), 'backend', 'data', 'totp-secrets.json');
+
+// Datenbank laden oder initialisieren
+function loadTOTPSecrets() {
+  try {
+    if (fs.existsSync(dbPath)) {
+      const raw = fs.readFileSync(dbPath, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.error('Fehler beim Laden der TOTP-Datenbank:', e);
+  }
+  return {};
+}
+
+function saveTOTPSecrets(secrets) {
+  try {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.writeFileSync(dbPath, JSON.stringify(secrets, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Fehler beim Speichern der TOTP-Datenbank:', e);
+  }
+}
+
+let totpSecrets = loadTOTPSecrets();
 /**
  * TOTP Authenticator Utility - HNEE VPN
  *
@@ -21,8 +50,7 @@
 import { authenticator } from 'otplib';
 import qrcode from 'qrcode';
 
-// Temporärer TOTP-Secret-Speicher im Arbeitsspeicher: Benutzername -> Secret
-const totpSecrets = new Map();
+// Entfernt: temporärer Speicher, da persistente Datenbank verwendet wird
 
 /**
  * Generiert und speichert ein TOTP-Secret für den Benutzer, gibt Secret und otpauth-URL zurück
@@ -32,10 +60,11 @@ const totpSecrets = new Map();
  */
 export function generateTOTPSecretForUser(username, issuer = 'HNEE VPN') {
   if (!username) throw new Error('Benutzername erforderlich');
-  let secret = totpSecrets.get(username);
+  let secret = totpSecrets[username];
   if (!secret) {
     secret = authenticator.generateSecret();
-    totpSecrets.set(username, secret);
+    totpSecrets[username] = secret;
+    saveTOTPSecrets(totpSecrets);
   }
   const otpauth = authenticator.keyuri(username, issuer, secret);
   return { secret, otpauth };
@@ -59,7 +88,7 @@ export async function getTOTPQRCode(username, issuer = 'HNEE VPN') {
  * @returns {boolean} true wenn gültig, sonst false
  */
 export function verifyTOTPForUser(username, token) {
-  const secret = totpSecrets.get(username);
+  const secret = totpSecrets[username];
   if (!secret) return false;
   return authenticator.check(token, secret);
 }

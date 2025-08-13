@@ -172,7 +172,7 @@ const getUserVPNFiles = async (username) => {
         createdAt: client.created || client.created_at || new Date().toISOString(),
         lastConnected: latestHandshakeISO,
         ipAddress: ipAddress,
-        platform: detectPlatform(deviceName),
+        platform: 'unknown',
         publicKey: client.pubkey || client.public_key || '',
         tunnelAddress: ipAddress,
         servers: client.servers || '',
