@@ -38,8 +38,6 @@ import { logVPNEvent } from '../utils/vpnLogger.js';
 import { getOPNsenseAPI } from '../config/opnsense.js';
 
 // ===== TOTP LOGIC (imported) =====
-import { requireVPNAccess } from '../utils/otpAuthenticator.js';
-// (TOTP API handlers are not used directly in this controller)
 
 // Promisify exec für async/await
 const execAsync = promisify(exec);
@@ -200,12 +198,11 @@ const getUserVPNFiles = async (username) => {
  * Route: GET /api/vpn/connections
  */
 export const getUserVPNConnections = async (req, res) => {
-  requireVPNAccess(req, res, () => {
-          logVPNEvent(req, 'VIEW_VPN_CONNECTIONS', `User: ${req.user?.username}`);
-          logSecurityEvent('VIEW_VPN_CONNECTIONS', req, { username: req.user?.username });
-    // ...existing code...
-  });
   try {
+    // Zugriff prüfen
+    // TOTP-Zugriffsprüfung entfernt: Alle authentifizierten Nutzer können ihre Peers sehen
+    logVPNEvent(req, 'VIEW_VPN_CONNECTIONS', `User: ${req.user?.username}`);
+    logSecurityEvent('VIEW_VPN_CONNECTIONS', req, { username: req.user?.username });
     const username = req.user.username;
     // VPN-Peers des Benutzers aus OPNsense abrufen
     const connections = await getUserVPNFiles(username);
@@ -214,13 +211,13 @@ export const getUserVPNConnections = async (req, res) => {
     const activeCount = connections.filter(conn => conn.status === 'active' || conn.enabled).length;
     const connectedCount = connections.filter(conn => conn.status === 'connected').length;
     // Audit-Log
-        logSecurityEvent('VIEW_VPN_CONNECTIONS', req, {
-          username,
-          total: connections.length,
-          active: activeCount,
-          connected: connectedCount
-        });
-    res.json({
+    logSecurityEvent('VIEW_VPN_CONNECTIONS', req, {
+      username,
+      total: connections.length,
+      active: activeCount,
+      connected: connectedCount
+    });
+    return res.json({
       success: true,
       connections: connections,
       stats: {
@@ -236,7 +233,7 @@ export const getUserVPNConnections = async (req, res) => {
     });
   } catch (error) {
     console.error(`❌ Fehler beim Abrufen der VPN-Verbindungen für ${req.user?.username}:`, error.message);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Fehler beim Abrufen der VPN-Verbindungen',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -253,11 +250,10 @@ export const getUserVPNConnections = async (req, res) => {
  * Route: POST /api/vpn/connections
  */
 export const createVPNConnection = async (req, res) => {
-  requireVPNAccess(req, res, () => {
-          logVPNEvent(req, 'CREATE_VPN_CONNECTION', `User: ${req.user?.username}, Name: ${req.body.name}`);
-          logSecurityEvent('CREATE_VPN_CONNECTION', req, { username: req.user?.username, name: req.body.name });
-    // ...existing code...
-  });
+  // TOTP-Validierung entfernt: Peer-Erstellung ohne TOTP möglich
+  const username = req.user?.username;
+  logVPNEvent(req, 'CREATE_VPN_CONNECTION', `User: ${username}, Name: ${req.body.name}`);
+  logSecurityEvent('CREATE_VPN_CONNECTION', req, { username, name: req.body.name });
   try {
     const { name, publicKey, platform = 'windows' } = req.body;
     const user = req.user;
