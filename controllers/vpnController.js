@@ -137,9 +137,10 @@ const getUserVPNFiles = async (username) => {
       let status = 'inactive';
       let lastConnected = null;
       // Nutze 'latest-handshake' (UNIX timestamp) als bevorzugte Quelle
-      if (typeof client['latest-handshake'] === 'number' && client['latest-handshake'] > 0) {
-        lastConnected = new Date(client['latest-handshake'] * 1000).toISOString();
-      } 
+        if (client['latest-handshake'] > 0) {
+          lastConnected = new Date(client['latest-handshake'] * 1000).toISOString();
+          console.log(`🔍 Letzte Verbindung für ${deviceName}: ${lastConnected}`);
+        } else console.log(`🔍 Keine letzte Verbindung für ${deviceName} gefunden, nutze Standardwert. ${lastConnected}`);
       if (client.enabled === '1' || client.enabled === true) {
         status = 'active';
       }
@@ -158,8 +159,7 @@ const getUserVPNFiles = async (username) => {
       } else if (client.address) {
         ipAddress = client.address;
       }
-      const latestHandshakeRaw = client['latest-handshake'];
-      const latestHandshakeISO = (typeof latestHandshakeRaw === 'number') ? new Date(latestHandshakeRaw * 1000).toISOString() : null;
+       
       const connection = {
         id: client.uuid || crypto.randomUUID(),
         name: deviceName,
@@ -168,7 +168,7 @@ const getUserVPNFiles = async (username) => {
         status: status,
         enabled: client.enabled === '1' || client.enabled === true,
         createdAt: client.created || client.created_at || new Date().toISOString(),
-        lastConnected: latestHandshakeISO,
+        lastConnected: client.lastConnected || 'n/a',
         ipAddress: ipAddress,
         platform: 'unknown',
         publicKey: client.pubkey || client.public_key || '',
