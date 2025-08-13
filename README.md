@@ -81,11 +81,3 @@ backend/
 
 - Test-Skripte im `test/`-Verzeichnis
 - Beispiel: `test/test-auth-flow.js`, `test/test-vpn-controller.js`
-
-## 📄 Lizenz
-
-MIT-Lizenz – siehe LICENSE.md
-
----
-
-*Entwickelt mit ❤️ für die HNEE IT-Service Zentrum*
