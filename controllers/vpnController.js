@@ -1,46 +1,3 @@
-// ===== OTP LOGIC (imported) =====
-import {
-  requireVPNAccess,
-  isAdminAvailable
-} from '../utils/otpAuthenticator.js';
-import {
-  getTOTPSetup,
-  verifyTOTP
-} from '../controllers/totpController.js';
-
-/**
- * API-Handler: Generiert und speichert einen OTP für den Benutzer
- */
-export const generateOTP = async (req, res) => {
-  const username = req.user?.username;
-  if (!username) {
-    return res.status(401).json({ success: false, error: 'Nicht authentifiziert' });
-  }
-  try {
-    const { otp, expires } = generateOTPForUser(username);
-    // TODO: Send OTP via email/SMS (for demo, return in response)
-    res.json({ success: true, otp, expires });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/**
- * API-Handler: Verifiziert den OTP für den Benutzer
- */
-export const verifyOTP = async (req, res) => {
-  const username = req.user?.username;
-  const { otp } = req.body;
-  if (!username || !otp) {
-    return res.status(400).json({ success: false, error: 'OTP und Benutzer erforderlich' });
-  }
-  if (!verifyOTPForUser(username, otp)) {
-    return res.status(401).json({ success: false, error: 'Ungültiger oder abgelaufener OTP' });
-  }
-  req.session = req.session || {};
-  req.session.vpnOtpVerified = true;
-  res.json({ success: true });
-};
 /**
  * VPN-Management Controller für das HNEE IT-Service Zentrum
  *
@@ -77,44 +34,12 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import crypto from 'crypto';
 import { logSecurityEvent } from '../utils/securityLogger.js';
-import geoip from 'geoip-lite';
-import UAParser from 'ua-parser-js';
-import fs from 'fs';
-import path from 'path';
-/**
- * Loggt VPN-bezogene Events mit IP, GeoLocation, Device, Name und Timestamp.
- * @param {Object} req - Express Request Objekt
- * @param {string} action - Aktion (z.B. VIEW, CREATE, DELETE)
- * @param {string} details - Weitere Details
- */
-function logVPNEvent(req, action, details = '') {
-  const ip = req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress || 'unknown';
-  const geo = geoip.lookup(ip) || {};
-  const ua = req.headers['user-agent'] || '';
-  const parser = new UAParser(ua);
-  const deviceInfo = parser.getResult();
-  const logEntry = {
-    timestamp: new Date().toISOString(),
-    username: req.user?.username || 'unknown',
-    action,
-    details,
-    ip,
-    geo,
-    device: deviceInfo.device?.type || 'unknown',
-    deviceName: deviceInfo.device?.model || deviceInfo.os?.name || 'unknown',
-    userAgent: ua
-  };
-  logger.info(`[VPN LOG] ${JSON.stringify(logEntry)}`);
-  // Write to vpn.log file
-  try {
-    const logPath = path.resolve(__dirname, '../logs/vpn.log');
-    fs.appendFileSync(logPath, JSON.stringify(logEntry) + '\n', 'utf8');
-  } catch (err) {
-    logger.error(`[VPN LOG ERROR] Could not write to vpn.log: ${err.message}`);
-  }
-}
+import { logVPNEvent } from '../utils/vpnLogger.js';
 import { getOPNsenseAPI } from '../config/opnsense.js';
-import { logger } from '../utils/securityLogger.js';
+
+// ===== TOTP LOGIC (imported) =====
+import { requireVPNAccess } from '../utils/otpAuthenticator.js';
+// (TOTP API handlers are not used directly in this controller)
 
 // Promisify exec für async/await
 const execAsync = promisify(exec);
@@ -265,20 +190,6 @@ const getUserVPNFiles = async (username) => {
   }
 };
 
-/**
- * Erkennt die Zielplattform (windows, macos, ios, android, linux) anhand des Gerätenamens.
- *
- * @param {string} deviceName - Name des Geräts
- * @returns {string} Plattform-String
- */
-const detectPlatform = (deviceName) => {
-  const name = deviceName.toLowerCase();
-  if (name.includes('iphone') || name.includes('ipad') || name.includes('ios')) return 'ios';
-  if (name.includes('android') || name.includes('phone')) return 'android';
-  if (name.includes('mac') || name.includes('macbook')) return 'macos';
-  if (name.includes('windows') || name.includes('pc') || name.includes('laptop')) return 'windows';
-  return 'linux';
-};
 
 /**
  * API-Handler: Gibt alle VPN-Verbindungen des angemeldeten Benutzers zurück.
@@ -290,7 +201,8 @@ const detectPlatform = (deviceName) => {
  */
 export const getUserVPNConnections = async (req, res) => {
   requireVPNAccess(req, res, () => {
-    logVPNEvent(req, 'VIEW_VPN_CONNECTIONS', `User: ${req.user?.username}`);
+          logVPNEvent(req, 'VIEW_VPN_CONNECTIONS', `User: ${req.user?.username}`);
+          logSecurityEvent('VIEW_VPN_CONNECTIONS', req, { username: req.user?.username });
     // ...existing code...
   });
   try {
@@ -302,8 +214,12 @@ export const getUserVPNConnections = async (req, res) => {
     const activeCount = connections.filter(conn => conn.status === 'active' || conn.enabled).length;
     const connectedCount = connections.filter(conn => conn.status === 'connected').length;
     // Audit-Log
-    logSecurityEvent(username, 'VIEW_VPN_CONNECTIONS', 
-      `VPN-Verbindungen abgerufen: ${connections.length} total, ${activeCount} aktiv, ${connectedCount} verbunden`);
+        logSecurityEvent('VIEW_VPN_CONNECTIONS', req, {
+          username,
+          total: connections.length,
+          active: activeCount,
+          connected: connectedCount
+        });
     res.json({
       success: true,
       connections: connections,
@@ -338,7 +254,8 @@ export const getUserVPNConnections = async (req, res) => {
  */
 export const createVPNConnection = async (req, res) => {
   requireVPNAccess(req, res, () => {
-    logVPNEvent(req, 'CREATE_VPN_CONNECTION', `User: ${req.user?.username}, Name: ${req.body.name}`);
+          logVPNEvent(req, 'CREATE_VPN_CONNECTION', `User: ${req.user?.username}, Name: ${req.body.name}`);
+          logSecurityEvent('CREATE_VPN_CONNECTION', req, { username: req.user?.username, name: req.body.name });
     // ...existing code...
   });
   try {
@@ -462,8 +379,12 @@ export const createVPNConnection = async (req, res) => {
       createdAt: new Date().toISOString(),
       publicKey: publicKey.trim()
     };
-    logSecurityEvent(username, 'CREATE_VPN_CONNECTION', 
-      `WireGuard-Verbindung erstellt: ${clientName} auf ${platform}`);
+        logSecurityEvent('CREATE_VPN_CONNECTION', req, {
+          username,
+          clientName,
+          platform,
+          assignedIP
+        });
     res.status(201).json({
       success: true,
       connection: newConnection,
@@ -488,7 +409,8 @@ export const createVPNConnection = async (req, res) => {
  */
 export const downloadVPNConfig = async (req, res) => {
   requireVPNAccess(req, res, () => {
-    logVPNEvent(req, 'DOWNLOAD_VPN_CONFIG', `User: ${req.user?.username}, ConnectionId: ${req.params.id}`);
+          logVPNEvent(req, 'DOWNLOAD_VPN_CONFIG', `User: ${req.user?.username}, ConnectionId: ${req.params.id}`);
+          logSecurityEvent('DOWNLOAD_VPN_CONFIG', req, { username: req.user?.username, connectionId: req.params.id });
     // ...existing code...
   });
   try {
@@ -527,8 +449,12 @@ AllowedIPs = 0.0.0.0/0
 # User: ${username}
 # Importieren Sie die Konfiguration in Ihren WireGuard-Client
 `;
-    logSecurityEvent(username, 'DOWNLOAD_VPN_CONFIG', 
-      `VPN-Konfiguration heruntergeladen: ${connection.filename}`);
+        logVPNEvent(req, 'DOWNLOAD_VPN_CONFIG', `VPN-Konfiguration heruntergeladen: ${connection.filename}`);
+        logSecurityEvent('DOWNLOAD_VPN_CONFIG', req, {
+          username,
+          filename: connection.filename,
+          connectionId: id
+        });
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', `attachment; filename="${connection.filename}"`);
     res.send(config);
@@ -551,7 +477,8 @@ AllowedIPs = 0.0.0.0/0
  */
 export const deleteVPNConnection = async (req, res) => {
   requireVPNAccess(req, res, () => {
-    logVPNEvent(req, 'DELETE_VPN_CONNECTION', `User: ${req.user?.username}, ConnectionId: ${req.params.id}`);
+          logVPNEvent(req, 'DELETE_VPN_CONNECTION', `User: ${req.user?.username}, ConnectionId: ${req.params.id}`);
+          logSecurityEvent('DELETE_VPN_CONNECTION', req, { username: req.user?.username, connectionId: req.params.id });
     // ...existing code...
   });
   try {
@@ -574,8 +501,12 @@ export const deleteVPNConnection = async (req, res) => {
     await opnsense.reconfigure();
     await opnsense.restartInterface();
     // Audit-Log
-    logSecurityEvent(username, 'DELETE_VPN_CONNECTION', 
-      `WireGuard-Verbindung gelöscht: ${connection.filename}`);
+        logVPNEvent(req, 'DELETE_VPN_CONNECTION', `WireGuard-Verbindung gelöscht: ${connection.filename}`);
+        logSecurityEvent('DELETE_VPN_CONNECTION', req, {
+          username,
+          filename: connection.filename,
+          connectionId: id
+        });
     res.json({
       success: true,
       message: `VPN-Verbindung ${connection.name} erfolgreich gelöscht`
@@ -666,134 +597,7 @@ export const getVPNStats = async (req, res) => {
   }
 };
 
-/**
- * API-Handler: Generiert eine VPN-Konfigurationsvorlage für verschiedene Plattformen.
- *
- * Liefert Dateinamen, Installationsanleitung und Download-URL für die gewählte Plattform.
- *
- * Route: GET /api/vpn/config
- */
-export const generateVpnConfig = async (req, res) => {
-  requireVPNAccess(req, res, () => {
-    logVPNEvent(req, 'GENERATE_VPN_CONFIG', `User: ${req.user?.username}, Platform: ${req.query.platform}`);
-    // ...existing code...
-  });
-  try {
-    const username = req.user?.username || 'unknown';
-    const { platform = 'windows' } = req.query;
-    console.log(`🔐 VPN-Konfiguration für ${username}, Plattform: ${platform}`);
-    // Unterstützte Plattformen
-    const supportedPlatforms = ['windows', 'macos', 'linux', 'ios', 'android'];
-    if (!supportedPlatforms.includes(platform)) {
-      return res.status(400).json({
-        error: 'Unbekannte Plattform',
-        supportedPlatforms: supportedPlatforms
-      });
-    }
-    // Plattform-spezifische Konfiguration
-    const platformConfigs = {
-      windows: {
-        filename: `${username}-windows.conf`,
-        instructions: [
-          'WireGuard für Windows herunterladen: https://www.wireguard.com/install/',
-          'Konfigurationsdatei importieren',
-          'Tunnel aktivieren'
-        ]
-      },
-      macos: {
-        filename: `${username}-macos.conf`,
-        instructions: [
-          'WireGuard für macOS herunterladen: https://apps.apple.com/app/wireguard/id1451685025',
-          'Konfigurationsdatei importieren',
-          'Tunnel aktivieren'
-        ]
-      },
-      linux: {
-        filename: `${username}-linux.conf`,
-        instructions: [
-          'WireGuard installieren: sudo apt install wireguard',
-          'Konfiguration nach /etc/wireguard/ kopieren',
-          'Starten: sudo wg-quick up [filename]'
-        ]
-      },
-      ios: {
-        filename: `${username}-ios.conf`,
-        instructions: [
-          'WireGuard iOS App installieren',
-          'QR-Code scannen oder Datei importieren',
-          'VPN aktivieren'
-        ]
-      },
-      android: {
-        filename: `${username}-android.conf`,
-        instructions: [
-          'WireGuard Android App installieren',
-          'QR-Code scannen oder Datei importieren',
-          'VPN aktivieren'
-        ]
-      }
-    };
-    const config = platformConfigs[platform];
-    logSecurityEvent(username, 'GENERATE_VPN_CONFIG', 
-      `VPN-Konfiguration generiert für Plattform: ${platform}`);
-    res.json({
-      success: true,
-      platform: platform,
-      config: {
-        filename: config.filename,
-        instructions: config.instructions,
-        downloadUrl: `/api/vpn/download/${username}/${platform}`,
-        validUntil: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        note: 'Erstellen Sie zuerst eine VPN-Verbindung mit Ihrem WireGuard Public Key'
-      },
-      supportedPlatforms: supportedPlatforms,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Fehler bei VPN-Konfiguration:', error);
-    res.status(500).json({ 
-      error: 'Fehler beim Generieren der VPN-Konfiguration',
-      details: error.message
-    });
-  }
-};
-
 // ===== HILFSFUNKTIONEN =====
-
-/**
- * Generiert eine vollständige WireGuard-Konfigurationsdatei als Text.
- *
- * @param {string} username - Benutzername
- * @param {string} deviceName - Gerätename
- * @param {string} clientIP - Zuzuordnende IP-Adresse
- * @param {string} clientPublicKey - Öffentlicher Key des Clients
- * @param {string} serverPublicKey - Öffentlicher Key des Servers
- * @returns {string} WireGuard-Konfigurationsdatei
- */
-function generateWireGuardConfig(username, deviceName, clientIP, clientPublicKey, serverPublicKey) {
-  return `[Interface]
-# HNEE WireGuard VPN - ${deviceName}
-# User: ${username}
-# Generated: ${new Date().toISOString()}
-PrivateKey = YOUR_PRIVATE_KEY_HERE
-Address = ${clientIP}/24
-DNS = 10.1.1.24, 10.1.1.5
-MTU = 1280
-
-[Peer]
-# HNEE VPN Server
-PublicKey = ${serverPublicKey}
-Endpoint = vpn.hnee.de:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-
-# Hinweise:
-# 1. Ersetzen Sie YOUR_PRIVATE_KEY_HERE mit Ihrem WireGuard Private Key
-# 2. Dieser Key gehört zu Ihrem Public Key: ${clientPublicKey}
-# 3. Speichern Sie diese Datei als ${username}-${deviceName}.conf
-# 4. Importieren Sie die Konfiguration in Ihren WireGuard-Client
-`;
-}
 
 /**
  * Holt alle aktuell verwendeten IP-Adressen aus OPNsense (Peers).

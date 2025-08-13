@@ -10,7 +10,7 @@
  * - Sicherheitsereignis-Kategorisierung
  * - Automatische Metadaten-Erfassung
  * 
- * @author ITSZ Team
+ * @author Paul Buchwald
  * @version 1.0.0
  */
 

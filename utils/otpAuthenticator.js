@@ -1,17 +1,28 @@
+/**
+ * TOTP Authenticator Utility - HNEE VPN
+ *
+ * Dieses Modul stellt alle Funktionen für die TOTP-basierte Zwei-Faktor-Authentifizierung bereit.
+ *
+ * Features:
+ * - Generierung und Speicherung von TOTP-Secrets pro Benutzer
+ * - Erstellung von otpauth-URLs und QR-Codes für Authenticator-Apps
+ * - Validierung von TOTP-Codes
+ * - Middleware zum Schutz von VPN-Endpunkten (nur mit gültigem TOTP)
+ *
+ * Hinweise:
+ * - Secrets werden nur im Arbeitsspeicher gehalten (kein persistenter Speicher)
+ * - Kompatibel mit gängigen Authenticator-Apps (Google Authenticator, Authy, etc.)
+ * - Für produktive Nutzung sollte die Secret-Speicherung persistent erfolgen
+ *
+ * @author Paul Buchwald
+ * @version 1.0.0
+ */
+
 import { authenticator } from 'otplib';
 import qrcode from 'qrcode';
-import crypto from 'crypto';
 
 // Temporärer TOTP-Secret-Speicher im Arbeitsspeicher: Benutzername -> Secret
 const totpSecrets = new Map();
-
-/**
- * Prüft, ob ein Admin verfügbar ist (Demo: immer false)
- * TODO: Echte Logik für Admin-Präsenz implementieren (z.B. Online-User, Session-DB)
- */
-export function isAdminAvailable() {
-  return false;
-}
 
 /**
  * Generiert und speichert ein TOTP-Secret für den Benutzer, gibt Secret und otpauth-URL zurück
@@ -60,9 +71,9 @@ export function verifyTOTPForUser(username, token) {
  * @param {function} next - Weiterführende Middleware
  */
 export function requireVPNAccess(req, res, next) {
-  if (req.user?.isITEmployee || isAdminAvailable()) {
-    return next();
-  }
+//   if (req.user?.isITEmployee || isAdminAvailable()) {
+//     return next();
+//   }
   if (req.session?.vpnOtpVerified) {
     return next();
   }
