@@ -135,12 +135,14 @@ const getUserVPNFiles = async (username) => {
       const deviceName = client.name.replace(new RegExp(`^${username}-`, 'i'), '');
       // Status-Bestimmung basierend auf verschiedenen API-Feldern
       let status = 'inactive';
-      let lastConnected = null;
+      let lastConnected = 'Never connected';
       // Nutze 'latest-handshake' (UNIX timestamp) als bevorzugte Quelle
-        if (client['latest-handshake'] > 0) {
-          lastConnected = new Date(client['latest-handshake'] * 1000).toISOString();
-          console.log(`🔍 Letzte Verbindung für ${deviceName}: ${lastConnected}`);
-        } else console.log(`🔍 Keine letzte Verbindung für ${deviceName} gefunden, nutze Standardwert. ${lastConnected}`);
+      if (typeof client['latest-handshake'] === 'number' && client['latest-handshake'] > 0) {
+        lastConnected = new Date(client['latest-handshake'] * 1000).toISOString();
+        console.log(`🔍 Letzte Verbindung für ${deviceName}: ${lastConnected}`);
+      } else {
+        console.log(`🔍 Keine letzte Verbindung für ${deviceName} gefunden, nutze Standardwert. ${lastConnected}`);
+      }
       if (client.enabled === '1' || client.enabled === true) {
         status = 'active';
       }
@@ -148,7 +150,7 @@ const getUserVPNFiles = async (username) => {
       if (client.connected === '1' || client.connected === true || client.status === 'connected') {
         status = 'connected';
         // lastConnected bleibt wie oben bestimmt
-        if (!lastConnected) lastConnected = new Date().toISOString();
+        if (lastConnected === 'Never connected') lastConnected = new Date().toISOString();
       }
       // IP-Adresse aus verschiedenen möglichen Feldern extrahieren
       let ipAddress = 'Nicht zugewiesen';
@@ -168,7 +170,7 @@ const getUserVPNFiles = async (username) => {
         status: status,
         enabled: client.enabled === '1' || client.enabled === true,
         createdAt: client.created || client.created_at || new Date().toISOString(),
-        lastConnected: client.lastConnected || 'n/a',
+        lastConnected: lastConnected,
         ipAddress: ipAddress,
         platform: 'unknown',
         publicKey: client.pubkey || client.public_key || '',
